@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { DEFAULT_PROFILE_COLORS, RequestContext, StoredToken } from '../types';
+import { AppState, Collection, DEFAULT_PROFILE_COLORS, EnvironmentConfig, Profile, RequestContext, StoredToken } from '../types';
 import { BlueByrdStateManager } from '../state/stateManager';
 import { HttpService } from '../services/httpService';
 import { VariableService } from '../services/variableService';
@@ -1310,80 +1310,15 @@ export class CommandManager {
             result.type === 'bluebyrd-collection' ||
             result.type === 'byrdsnest-collection'
           ) {
-            this.stateManager.saveCollection(result.collection);
-            this.treeProvider.refresh();
-            const directReqs = result.collection.requests.length;
-            const folderReqs = result.collection.folders.reduce((acc, f) => acc + f.requests.length, 0);
-            const totalReqs = directReqs + folderReqs;
-            vscode.window.showInformationMessage(
-              `Imported collection '${result.collection.name}' (${totalReqs} request${totalReqs === 1 ? '' : 's'}, ${result.collection.folders.length} folder${result.collection.folders.length === 1 ? '' : 's'}).`
-            );
+            await this.handleCollectionImport(filePath, result.collection);
           } else if (
             result.type === 'postman-environment' ||
             result.type === 'bluebyrd-environment' ||
             result.type === 'byrdsnest-environment'
           ) {
-            this.stateManager.saveEnvironment(result.environmentName, result.environment);
-            this.treeProvider.refresh();
-            const varCount = Object.keys(result.environment.variables || {}).length;
-            vscode.window.showInformationMessage(
-              `Imported environment '${result.environmentName}' (${varCount} variable${varCount === 1 ? '' : 's'}).`
-            );
+            await this.handleEnvironmentImport(filePath, result.environmentName, result.environment);
           } else if (result.type === 'bluebyrd-backup' || result.type === 'byrdsnest-backup') {
-            const choice = await vscode.window.showWarningMessage(
-              'How would you like to restore this workspace backup?',
-              { modal: true },
-              'Merge with Existing',
-              'Replace Entire Workspace'
-            );
-            if (!choice) return;
-
-            if (choice === 'Replace Entire Workspace') {
-              this.stateManager.save(this.stateManager.normalizeState(result.state));
-              this.treeProvider.refresh();
-              const totalReqs = result.state.collections.reduce(
-                (acc, c) => acc + c.requests.length + c.folders.reduce((facc, f) => facc + f.requests.length, 0),
-                0
-              );
-              vscode.window.showInformationMessage(
-                `Workspace replaced from backup: ${result.state.collections.length} collections (${totalReqs} requests), ${Object.keys(result.state.environments).length} environments, ${result.state.profiles.length} profile.`
-              );
-            } else {
-              // Merge
-              const currentState = this.stateManager.getState();
-              for (const p of result.state.profiles) {
-                if (!currentState.profiles.some((cp) => cp.id === p.id || cp.name === p.name)) {
-                  currentState.profiles.push(p);
-                }
-              }
-              for (const [k, e] of Object.entries(result.state.environments)) {
-                currentState.environments[k] = e;
-              }
-              for (const col of result.state.collections) {
-                if (!currentState.collections.some((cc) => cc.id === col.id)) {
-                  currentState.collections.push(col);
-                } else {
-                  col.id = `col-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-                  currentState.collections.push(col);
-                }
-              }
-              if (Array.isArray(result.state.history) && result.state.history.length > 0) {
-                for (const h of result.state.history) {
-                  if (!currentState.history.some((ch) => ch.id === h.id)) {
-                    currentState.history.push(h);
-                  }
-                }
-              }
-              this.stateManager.save(this.stateManager.normalizeState(currentState));
-              this.treeProvider.refresh();
-              const totalReqs = result.state.collections.reduce(
-                (acc, c) => acc + c.requests.length + c.folders.reduce((facc, f) => facc + f.requests.length, 0),
-                0
-              );
-              vscode.window.showInformationMessage(
-                `Workspace merged with backup: imported ${result.state.collections.length} collections (${totalReqs} requests), ${Object.keys(result.state.environments).length} environments.`
-              );
-            }
+            await this.handleBackupImport(filePath, result.state);
           } else {
             vscode.window.showWarningMessage(`Unrecognized import format for '${path.basename(filePath)}'.`);
           }
@@ -1589,6 +1524,344 @@ export class CommandManager {
         await this.updateService.checkForUpdates(true);
       })
     );
+  }
+
+  private async handleCollectionImport(filePath: string, collection: Collection): Promise<void> {
+    const fileName = path.basename(filePath);
+    const directReqs = collection.requests ? collection.requests.length : 0;
+    const folderReqs = (collection.folders || []).reduce((acc, f) => acc + (f.requests ? f.requests.length : 0), 0);
+    const totalReqs = directReqs + folderReqs;
+    const folderCount = collection.folders ? collection.folders.length : 0;
+
+    let collectionToSave = collection;
+
+    if (folderCount > 0 || totalReqs > 1) {
+      const scanSummary = `Scanned '${fileName}': Found collection '${collection.name}' (${totalReqs} request${totalReqs === 1 ? '' : 's'}, ${folderCount} folder${folderCount === 1 ? '' : 's'}).`;
+
+      const choice = await vscode.window.showInformationMessage(
+        scanSummary,
+        { modal: true },
+        'Import Entire Collection',
+        'Choose Folders & Requests...'
+      );
+      if (!choice) return;
+
+      if (choice === 'Choose Folders & Requests...') {
+        type ScannedColPickItem = vscode.QuickPickItem & {
+          itemType: 'folder' | 'request';
+          id: string;
+        };
+
+        const items: (ScannedColPickItem | vscode.QuickPickItem)[] = [];
+
+        if (collection.folders && collection.folders.length > 0) {
+          items.push({
+            label: 'Folders',
+            kind: vscode.QuickPickItemKind.Separator,
+          });
+          for (const f of collection.folders) {
+            items.push({
+              label: `$(folder) ${f.name}`,
+              description: `${f.requests ? f.requests.length : 0} request${(f.requests ? f.requests.length : 0) === 1 ? '' : 's'}`,
+              picked: true,
+              itemType: 'folder',
+              id: f.id,
+            });
+          }
+        }
+
+        if (collection.requests && collection.requests.length > 0) {
+          items.push({
+            label: 'Direct Requests',
+            kind: vscode.QuickPickItemKind.Separator,
+          });
+          for (const r of collection.requests) {
+            items.push({
+              label: `$(symbol-method) ${r.name || 'Untitled Request'}`,
+              description: `[${r.method || 'GET'}] ${r.url || ''}`,
+              picked: true,
+              itemType: 'request',
+              id: r.id,
+            });
+          }
+        }
+
+        const selected = await vscode.window.showQuickPick(items, {
+          canPickMany: true,
+          title: `Selective Import: ${collection.name}`,
+          placeHolder: "Select folders and requests to import (Press 'Enter' to confirm)",
+          ignoreFocusOut: true,
+        });
+
+        if (!selected || selected.length === 0) {
+          vscode.window.showInformationMessage('Import cancelled: No items selected.');
+          return;
+        }
+
+        const validPicks = selected as ScannedColPickItem[];
+        const chosenFolderIds = new Set(validPicks.filter(i => i.itemType === 'folder').map(i => i.id));
+        const chosenRequestIds = new Set(validPicks.filter(i => i.itemType === 'request').map(i => i.id));
+
+        collectionToSave = {
+          ...collection,
+          folders: (collection.folders || []).filter(f => chosenFolderIds.has(f.id)),
+          requests: (collection.requests || []).filter(r => chosenRequestIds.has(r.id)),
+        };
+      }
+    }
+
+    const currentState = this.stateManager.getState();
+    if (currentState.collections.some(cc => cc.id === collectionToSave.id)) {
+      collectionToSave.id = `col-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    }
+
+    this.stateManager.saveCollection(collectionToSave);
+    this.treeProvider.refresh();
+    const finalDirect = collectionToSave.requests ? collectionToSave.requests.length : 0;
+    const finalFolderReqs = (collectionToSave.folders || []).reduce((acc, f) => acc + (f.requests ? f.requests.length : 0), 0);
+    const finalTotal = finalDirect + finalFolderReqs;
+    vscode.window.showInformationMessage(
+      `Imported collection '${collectionToSave.name}' (${finalTotal} request${finalTotal === 1 ? '' : 's'}, ${(collectionToSave.folders || []).length} folder${(collectionToSave.folders || []).length === 1 ? '' : 's'}).`
+    );
+  }
+
+  private async handleEnvironmentImport(filePath: string, environmentName: string, environment: EnvironmentConfig): Promise<void> {
+    const fileName = path.basename(filePath);
+    const varCount = Object.keys(environment.variables || {}).length;
+    const exists = !!this.stateManager.getEnvironment(environmentName);
+
+    let envToSave = environment;
+
+    if (varCount > 1) {
+      const scanSummary = `Scanned '${fileName}': Found environment '${environmentName}' with ${varCount} variable${varCount === 1 ? '' : 's'}.${exists ? ' (Environment already exists in workspace)' : ''}`;
+
+      const choice = await vscode.window.showInformationMessage(
+        scanSummary,
+        { modal: true },
+        exists ? 'Overwrite Existing' : 'Import All Variables',
+        'Choose Variables to Import...'
+      );
+      if (!choice) return;
+
+      if (choice === 'Choose Variables to Import...') {
+        type ScannedVarPickItem = vscode.QuickPickItem & {
+          varKey: string;
+          varVal: string;
+        };
+
+        const items: ScannedVarPickItem[] = Object.entries(environment.variables || {}).map(([k, v]) => ({
+          label: `$(variable) ${k}`,
+          description: String(v),
+          picked: true,
+          varKey: k,
+          varVal: String(v),
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+          canPickMany: true,
+          title: `Selective Import: ${environmentName} Variables`,
+          placeHolder: "Select variables to import (Press 'Enter' to confirm)",
+          ignoreFocusOut: true,
+        });
+
+        if (!selected || selected.length === 0) {
+          vscode.window.showInformationMessage('Import cancelled: No variables selected.');
+          return;
+        }
+
+        const filteredVars: Record<string, string> = {};
+        for (const item of selected) {
+          filteredVars[item.varKey] = item.varVal;
+        }
+
+        envToSave = {
+          ...environment,
+          variables: filteredVars,
+        };
+      }
+    }
+
+    this.stateManager.saveEnvironment(environmentName, envToSave);
+    this.treeProvider.refresh();
+    const finalVarCount = Object.keys(envToSave.variables || {}).length;
+    vscode.window.showInformationMessage(
+      `Imported environment '${environmentName}' (${finalVarCount} variable${finalVarCount === 1 ? '' : 's'}).`
+    );
+  }
+
+  private async handleBackupImport(filePath: string, rawBackupState: AppState): Promise<void> {
+    const backupState = this.stateManager.normalizeState(rawBackupState);
+    const fileName = path.basename(filePath);
+    const numCollections = backupState.collections.length;
+    const totalBackupReqs = backupState.collections.reduce(
+      (acc, c) => acc + c.requests.length + c.folders.reduce((facc, f) => facc + f.requests.length, 0),
+      0
+    );
+    const numEnvironments = Object.keys(backupState.environments || {}).length;
+    const numProfiles = backupState.profiles ? backupState.profiles.length : 0;
+
+    const scanSummary = `Scanned '${fileName}': Found ${numCollections} collection${numCollections === 1 ? '' : 's'} (${totalBackupReqs} request${totalBackupReqs === 1 ? '' : 's'}), ${numEnvironments} environment${numEnvironments === 1 ? '' : 's'}, and ${numProfiles} profile${numProfiles === 1 ? '' : 's'}.`;
+
+    const choice = await vscode.window.showInformationMessage(
+      scanSummary,
+      { modal: true },
+      'Choose What to Import...',
+      'Import All (Merge)',
+      'Replace Entire Workspace'
+    );
+    if (!choice) return;
+
+    if (choice === 'Replace Entire Workspace') {
+      this.stateManager.save(this.stateManager.normalizeState(backupState));
+      this.treeProvider.refresh();
+      vscode.window.showInformationMessage(
+        `Workspace replaced from backup: ${numCollections} collections (${totalBackupReqs} requests), ${numEnvironments} environments, ${numProfiles} profile(s).`
+      );
+      return;
+    }
+
+    if (choice === 'Import All (Merge)') {
+      const currentState = this.stateManager.getState();
+      for (const p of backupState.profiles || []) {
+        if (!currentState.profiles.some((cp) => cp.id === p.id || cp.name === p.name)) {
+          currentState.profiles.push(p);
+        }
+      }
+      for (const [k, e] of Object.entries(backupState.environments || {})) {
+        currentState.environments[k] = e;
+      }
+      for (const col of backupState.collections || []) {
+        if (!currentState.collections.some((cc) => cc.id === col.id)) {
+          currentState.collections.push(col);
+        } else {
+          col.id = `col-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+          currentState.collections.push(col);
+        }
+      }
+      if (Array.isArray(backupState.history) && backupState.history.length > 0) {
+        for (const h of backupState.history) {
+          if (!currentState.history.some((ch) => ch.id === h.id)) {
+            currentState.history.push(h);
+          }
+        }
+      }
+      this.stateManager.save(this.stateManager.normalizeState(currentState));
+      this.treeProvider.refresh();
+      vscode.window.showInformationMessage(
+        `Workspace merged with backup: imported ${numCollections} collections (${totalBackupReqs} requests), ${numEnvironments} environments.`
+      );
+      return;
+    }
+
+    if (choice === 'Choose What to Import...') {
+      type ScannedBackupPickItem = vscode.QuickPickItem & {
+        category: 'collection' | 'environment' | 'profile';
+        itemData: any;
+      };
+
+      const items: (ScannedBackupPickItem | vscode.QuickPickItem)[] = [];
+      const currentState = this.stateManager.getState();
+
+      if (backupState.collections && backupState.collections.length > 0) {
+        items.push({
+          label: 'Collections',
+          kind: vscode.QuickPickItemKind.Separator,
+        });
+        for (const col of backupState.collections) {
+          const reqCount = col.requests.length + col.folders.reduce((acc, f) => acc + f.requests.length, 0);
+          const exists = currentState.collections.some(c => c.name === col.name || c.id === col.id);
+          items.push({
+            label: `$(folder) ${col.name}`,
+            description: `${reqCount} request${reqCount === 1 ? '' : 's'}, ${col.folders.length} folder${col.folders.length === 1 ? '' : 's'}${exists ? ' (exists in workspace)' : ''}`,
+            picked: true,
+            category: 'collection',
+            itemData: col,
+          });
+        }
+      }
+
+      const envEntries = Object.entries(backupState.environments || {});
+      if (envEntries.length > 0) {
+        items.push({
+          label: 'Environments',
+          kind: vscode.QuickPickItemKind.Separator,
+        });
+        for (const [envName, env] of envEntries) {
+          const varCount = Object.keys(env.variables || {}).length;
+          const exists = !!currentState.environments[envName];
+          items.push({
+            label: `$(server) ${envName}`,
+            description: `${varCount} variable${varCount === 1 ? '' : 's'}${exists ? ' (exists in workspace - will update)' : ''}`,
+            detail: env.baseUrl ? `Base URL: ${env.baseUrl}` : undefined,
+            picked: true,
+            category: 'environment',
+            itemData: { name: envName, env },
+          });
+        }
+      }
+
+      if (backupState.profiles && backupState.profiles.length > 0) {
+        items.push({
+          label: 'Profiles',
+          kind: vscode.QuickPickItemKind.Separator,
+        });
+        for (const prof of backupState.profiles) {
+          const varCount = Object.keys(prof.variables || {}).length;
+          const exists = currentState.profiles.some(p => p.name === prof.name || p.id === prof.id);
+          items.push({
+            label: `$(person) ${prof.name}`,
+            description: `Auth: ${prof.auth?.type || 'none'}, ${varCount} variable${varCount === 1 ? '' : 's'}${exists ? ' (exists in workspace)' : ''}`,
+            picked: true,
+            category: 'profile',
+            itemData: prof,
+          });
+        }
+      }
+
+      const selected = await vscode.window.showQuickPick(items, {
+        canPickMany: true,
+        title: `Selective Import: ${fileName}`,
+        placeHolder: "Select items to import (Press 'Enter' to confirm)",
+        ignoreFocusOut: true,
+      });
+
+      if (!selected || selected.length === 0) {
+        vscode.window.showInformationMessage('Import cancelled: No items selected.');
+        return;
+      }
+
+      const selectedPicks = selected as ScannedBackupPickItem[];
+      const selectedCollections = selectedPicks.filter(i => i.category === 'collection').map(i => i.itemData as Collection);
+      const selectedEnvironments = selectedPicks.filter(i => i.category === 'environment').map(i => i.itemData as { name: string; env: EnvironmentConfig });
+      const selectedProfiles = selectedPicks.filter(i => i.category === 'profile').map(i => i.itemData as Profile);
+
+      for (const p of selectedProfiles) {
+        if (!currentState.profiles.some((cp) => cp.id === p.id || cp.name === p.name)) {
+          currentState.profiles.push(p);
+        }
+      }
+      for (const { name, env } of selectedEnvironments) {
+        currentState.environments[name] = env;
+      }
+      for (const col of selectedCollections) {
+        if (!currentState.collections.some((cc) => cc.id === col.id)) {
+          currentState.collections.push(col);
+        } else {
+          col.id = `col-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+          currentState.collections.push(col);
+        }
+      }
+
+      this.stateManager.save(this.stateManager.normalizeState(currentState));
+      this.treeProvider.refresh();
+
+      const parts: string[] = [];
+      if (selectedCollections.length > 0) parts.push(`${selectedCollections.length} collection${selectedCollections.length === 1 ? '' : 's'}`);
+      if (selectedEnvironments.length > 0) parts.push(`${selectedEnvironments.length} environment${selectedEnvironments.length === 1 ? '' : 's'}`);
+      if (selectedProfiles.length > 0) parts.push(`${selectedProfiles.length} profile${selectedProfiles.length === 1 ? '' : 's'}`);
+
+      vscode.window.showInformationMessage(`Imported ${parts.join(', ')} from '${fileName}'.`);
+    }
   }
 }
 

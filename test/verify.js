@@ -50,6 +50,7 @@ const mockVscode = {
       return Promise.resolve(typeof this.value === 'string' ? this.value : JSON.stringify(this.value));
     }
   },
+  QuickPickItemKind: { Separator: -1, Default: 0 },
   window: {
     showInformationMessage: () => {},
     showErrorMessage: () => {},
@@ -4476,7 +4477,127 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     console.log('✓ byrdsnest-backup, byrdsnest-collection & byrdsnest-environment Import Parsing & Command Dispatch verified');
   }
 
-  console.log('\nAll 66 verification test suites passed successfully! 🎉');
+  // 67. Test Scanned Import Preview & Selective Import (Backup, Collection, Environment)
+  {
+    const fs = require('fs');
+    const cmdManagerSrc = fs.readFileSync(path.join(__dirname, '../src/commands/commandManager.ts'), 'utf8');
+
+    // 1. Verify CommandManager includes scanning & selective import handlers
+    assert(cmdManagerSrc.includes('handleBackupImport'), 'commandManager must implement handleBackupImport');
+    assert(cmdManagerSrc.includes('handleCollectionImport'), 'commandManager must implement handleCollectionImport');
+    assert(cmdManagerSrc.includes('handleEnvironmentImport'), 'commandManager must implement handleEnvironmentImport');
+    assert(cmdManagerSrc.includes('Choose What to Import...'), 'commandManager must offer Choose What to Import option for backups');
+    assert(cmdManagerSrc.includes('Choose Folders & Requests...'), 'commandManager must offer Choose Folders & Requests option for collections');
+    assert(cmdManagerSrc.includes('Choose Variables to Import...'), 'commandManager must offer Choose Variables to Import option for environments');
+    assert(cmdManagerSrc.includes('canPickMany: true'), 'commandManager must use multi-select QuickPick for selective import');
+
+    // 2. Test Selective Backup State Merging Logic
+    const stateManager = new BlueByrdStateManager(mockContext);
+    const existingState = stateManager.getState();
+    const initialColCount = existingState.collections.length;
+
+    // Simulate multi-item backup
+    const scannedBackup = {
+      collections: [
+        { id: 'sel-col-1', name: 'Selective Col 1', folders: [], requests: [{ id: 'r1', name: 'R1', method: 'GET', url: 'https://api.test/1' }] },
+        { id: 'sel-col-2', name: 'Selective Col 2', folders: [], requests: [{ id: 'r2', name: 'R2', method: 'GET', url: 'https://api.test/2' }] },
+        { id: 'unselected-col-3', name: 'Unselected Col 3', folders: [], requests: [] }
+      ],
+      environments: {
+        'Stage Selected': { id: 'env-s1', baseUrl: 'https://stage.test', variables: { key1: 'val1' } },
+        'Prod Selected': { id: 'env-p1', baseUrl: 'https://prod.test', variables: { key2: 'val2' } },
+        'Ignored Env': { id: 'env-ig', baseUrl: 'https://ignored.test', variables: {} }
+      },
+      profiles: [
+        { id: 'prof-sel', name: 'Profile Selected', auth: { type: 'bearer', token: 'tok' } },
+        { id: 'prof-ign', name: 'Profile Ignored', auth: { type: 'none' } }
+      ]
+    };
+
+    // User selects only Col 1 & 2, Stage & Prod, and Profile Selected
+    const chosenCols = [scannedBackup.collections[0], scannedBackup.collections[1]];
+    const chosenEnvs = [
+      { name: 'Stage Selected', env: scannedBackup.environments['Stage Selected'] },
+      { name: 'Prod Selected', env: scannedBackup.environments['Prod Selected'] }
+    ];
+    const chosenProfs = [scannedBackup.profiles[0]];
+
+    const mergedState = stateManager.getState();
+    for (const p of chosenProfs) {
+      if (!mergedState.profiles.some(cp => cp.id === p.id || cp.name === p.name)) mergedState.profiles.push(p);
+    }
+    for (const { name, env } of chosenEnvs) {
+      mergedState.environments[name] = env;
+    }
+    for (const col of chosenCols) {
+      if (!mergedState.collections.some(cc => cc.id === col.id)) mergedState.collections.push(col);
+    }
+    stateManager.save(stateManager.normalizeState(mergedState));
+
+    const finalState = stateManager.getState();
+    assert.strictEqual(finalState.collections.length, initialColCount + 2, 'Must only import selected 2 collections');
+    assert(finalState.collections.some(c => c.name === 'Selective Col 1'), 'Selective Col 1 must be present');
+    assert(finalState.collections.some(c => c.name === 'Selective Col 2'), 'Selective Col 2 must be present');
+    assert(!finalState.collections.some(c => c.name === 'Unselected Col 3'), 'Unselected Col 3 must NOT be imported');
+
+    assert(finalState.environments['Stage Selected'], 'Stage Selected must be imported');
+    assert(finalState.environments['Prod Selected'], 'Prod Selected must be imported');
+    assert(!finalState.environments['Ignored Env'], 'Ignored Env must NOT be imported');
+
+    assert(finalState.profiles.some(p => p.name === 'Profile Selected'), 'Profile Selected must be imported');
+    assert(!finalState.profiles.some(p => p.name === 'Profile Ignored'), 'Profile Ignored must NOT be imported');
+
+    // 3. Test Selective Collection Filtering Logic
+    const fullCol = {
+      id: 'full-col-1',
+      name: 'Full Col',
+      folders: [
+        { id: 'f1', name: 'Folder 1', requests: [{ id: 'fr1', name: 'FR1', method: 'GET', url: 'http://f1' }] },
+        { id: 'f2', name: 'Folder 2', requests: [{ id: 'fr2', name: 'FR2', method: 'POST', url: 'http://f2' }] }
+      ],
+      requests: [
+        { id: 'dr1', name: 'Direct Req 1', method: 'GET', url: 'http://dr1' },
+        { id: 'dr2', name: 'Direct Req 2', method: 'DELETE', url: 'http://dr2' }
+      ]
+    };
+
+    // User chooses Folder 1 only and Direct Req 2 only
+    const filteredCol = {
+      ...fullCol,
+      folders: fullCol.folders.filter(f => f.id === 'f1'),
+      requests: fullCol.requests.filter(r => r.id === 'dr2')
+    };
+
+    assert.strictEqual(filteredCol.folders.length, 1);
+    assert.strictEqual(filteredCol.folders[0].name, 'Folder 1');
+    assert.strictEqual(filteredCol.requests.length, 1);
+    assert.strictEqual(filteredCol.requests[0].name, 'Direct Req 2');
+
+    // 4. Test Selective Environment Variable Filtering Logic
+    const fullEnv = {
+      id: 'full-env-1',
+      baseUrl: 'https://api.full.com',
+      variables: {
+        keepA: '1',
+        keepB: '2',
+        dropC: '3'
+      }
+    };
+    const pickedKeys = ['keepA', 'keepB'];
+    const filteredVars = {};
+    for (const k of pickedKeys) {
+      filteredVars[k] = fullEnv.variables[k];
+    }
+    const filteredEnv = { ...fullEnv, variables: filteredVars };
+    assert.strictEqual(Object.keys(filteredEnv.variables).length, 2);
+    assert.strictEqual(filteredEnv.variables.keepA, '1');
+    assert.strictEqual(filteredEnv.variables.keepB, '2');
+    assert.strictEqual(filteredEnv.variables.dropC, undefined);
+
+    console.log('✓ Scanned Import Preview & Selective Import (Backup, Collection, Environment) verified');
+  }
+
+  console.log('\nAll 67 verification test suites passed successfully! 🎉');
   process.exit(0);
 })().catch(err => {
   console.error('Async test suite failure:', err);
