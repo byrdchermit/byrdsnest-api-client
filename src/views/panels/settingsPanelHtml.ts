@@ -1047,6 +1047,8 @@ export function getSettingsPanelHtml(
               scopes: authValues.scopes,
               grantType: authValues.grantType,
               selectedTokenId: authValues.selectedTokenId,
+              redirectUri: authValues.redirectUri,
+              pkce: authValues.pkce,
               inheritAuth,
               variables,
               headers,

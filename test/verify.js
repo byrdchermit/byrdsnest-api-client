@@ -66,6 +66,12 @@ const mockVscode = {
   workspace: {
     workspaceFolders: [],
   },
+  env: {
+    openExternal: (uri) => Promise.resolve(true),
+    clipboard: {
+      writeText: (text) => Promise.resolve(),
+    }
+  },
   Uri: {
     parse: (str) => ({ scheme: 'data', path: str, toString: () => str }),
     file: (p) => ({ fsPath: p, path: p, toString: () => p }),
@@ -534,6 +540,7 @@ function createMockDom() {
         selectedIndex: 0,
         querySelector: (sel) => getEl(sel),
         querySelectorAll: () => [],
+        closest: (sel) => getEl(sel),
         appendChild: () => {},
         remove: () => {},
         addEventListener: () => {},
@@ -553,6 +560,7 @@ function createMockDom() {
       classList: { add: () => {}, remove: () => {}, toggle: () => {} },
       querySelector: (sel) => getEl(sel),
       querySelectorAll: () => [],
+      closest: (sel) => getEl(sel),
       appendChild: () => {},
       remove: () => {},
       addEventListener: () => {},
@@ -4138,7 +4146,140 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     console.log('✓ Tabular Response View, Array Object Count & Drilling, CSV & Multi-Sheet XLSX Export verified');
   }
 
-  console.log('\nAll 62 verification test suites passed successfully! 🎉');
+  // 63. Test OAuth 2.0 Loopback Redirect Server, PKCE RFC 7636, Token Acquisition & Settings/Request Panel Parity
+  {
+    const { OAuthService } = require(path.join(repoDist, 'services/oauthService'));
+
+    // 1. RFC 7636 PKCE Code Verifier & Challenge
+    const verifier = OAuthService.generateCodeVerifier();
+    assert.strictEqual(typeof verifier, 'string', 'Verifier must be string');
+    assert(verifier.length >= 43 && verifier.length <= 128, 'Verifier length must be RFC 7636 compliant (43-128 chars)');
+    assert(/^[A-Za-z0-9\-._~]+$/.test(verifier), 'Verifier must only use RFC 7636 unreserved characters');
+
+    // Test RFC 7636 Appendix B test vector
+    const rfcVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+    const rfcChallenge = OAuthService.generateCodeChallenge(rfcVerifier);
+    assert.strictEqual(rfcChallenge, 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', 'PKCE code challenge must match RFC 7636 Appendix B test vector');
+
+    // 2. Redirect URI Parsing
+    const parsedDefault = OAuthService.parseRedirectUri('http://127.0.0.1:41982/callback');
+    assert.strictEqual(parsedDefault.hostname, '127.0.0.1', 'Hostname must be 127.0.0.1');
+    assert.strictEqual(parsedDefault.port, 41982, 'Port must be 41982');
+    assert.strictEqual(parsedDefault.pathname, '/callback', 'Pathname must be /callback');
+
+    const parsedCustom = OAuthService.parseRedirectUri('http://localhost:8080/auth/custom-cb');
+    assert.strictEqual(parsedCustom.hostname, 'localhost', 'Custom hostname must match');
+    assert.strictEqual(parsedCustom.port, 8080, 'Custom port must match');
+    assert.strictEqual(parsedCustom.pathname, '/auth/custom-cb', 'Custom path must match');
+
+    // 3. Authorization URL Builder
+    const authUrlWithPkce = OAuthService.buildAuthorizationUrl({
+      authorizationUrl: 'https://login.example.com/oauth/authorize',
+      clientId: 'byrdsnest-client-app',
+      redirectUri: 'http://127.0.0.1:41982/callback',
+      scopes: ['openid', 'profile', 'email'],
+      state: 'state-security-csrf-token',
+      codeChallenge: 'challenge-s256-test',
+      grantType: 'authorization_code'
+    });
+    const parsedBuiltUrl = new URL(authUrlWithPkce);
+    assert.strictEqual(parsedBuiltUrl.origin, 'https://login.example.com');
+    assert.strictEqual(parsedBuiltUrl.pathname, '/oauth/authorize');
+    assert.strictEqual(parsedBuiltUrl.searchParams.get('response_type'), 'code');
+    assert.strictEqual(parsedBuiltUrl.searchParams.get('client_id'), 'byrdsnest-client-app');
+    assert.strictEqual(parsedBuiltUrl.searchParams.get('redirect_uri'), 'http://127.0.0.1:41982/callback');
+    assert.strictEqual(parsedBuiltUrl.searchParams.get('scope'), 'openid profile email');
+    assert.strictEqual(parsedBuiltUrl.searchParams.get('state'), 'state-security-csrf-token');
+    assert.strictEqual(parsedBuiltUrl.searchParams.get('code_challenge'), 'challenge-s256-test');
+    assert.strictEqual(parsedBuiltUrl.searchParams.get('code_challenge_method'), 'S256');
+
+    // 4. Temporary Loopback Redirect Server Lifecycle
+    const testPort = 41986;
+    const testState = 'state-test-loopback-xyz';
+    const listenerPromise = OAuthService.startRedirectListener({
+      hostname: '127.0.0.1',
+      port: testPort,
+      pathname: '/callback',
+      expectedState: testState,
+      browserAuthUrl: `http://127.0.0.1:${testPort}/simulated-auth`
+    });
+
+    // Make mock HTTP GET simulating Identity Provider redirect
+    await new Promise(resolve => setTimeout(resolve, 50));
+    http.get(
+      `http://127.0.0.1:${testPort}/callback?code=mock-auth-code-12345&state=${testState}`,
+      (res) => {
+        let respData = '';
+        res.on('data', chunk => { respData += chunk; });
+        res.on('end', () => {
+          assert.strictEqual(res.statusCode, 200, 'Redirect handler must return 200 OK');
+          assert(respData.includes('Authentication Complete') || respData.includes('Authorization Successful'), 'Response HTML must contain confirmation message');
+          assert(respData.includes('byrdsnest api client'), 'Response HTML must be branded with byrdsnest api client');
+        });
+      }
+    );
+
+    const receivedCode = await listenerPromise;
+    assert.strictEqual(receivedCode, 'mock-auth-code-12345', 'Listener must resolve with received authorization code');
+
+    // 5. Verify Request Panel HTML Rendering
+    const mockState = new BlueByrdStateManager(mockContext).getState();
+    const mockReq = (mockState.collections[0]?.requests && mockState.collections[0].requests[0]) ||
+                    { id: 'req-1', name: 'Test Request', method: 'GET', url: 'https://api.example.com', headers: {} };
+    const reqHtml = getRequestPanelHtml(mockReq, mockState);
+
+    assert(reqHtml.includes('id="oauth-redirect-uri"'), 'Request Panel must include #oauth-redirect-uri input');
+    assert(reqHtml.includes('id="btn-copy-redirect-uri"'), 'Request Panel must include #btn-copy-redirect-uri copy button');
+    assert(reqHtml.includes('id="oauth-pkce"'), 'Request Panel must include #oauth-pkce checkbox');
+    assert(reqHtml.includes('id="btn-get-oauth-token"'), 'Request Panel must include ⚡ Get New Access Token button');
+    assert(reqHtml.includes('id="oauth-flow-status"'), 'Request Panel must include #oauth-flow-status');
+    assert(reqHtml.includes('syncGrantTypeVisibility'), 'Request Panel must include dynamic grant type visibility synchronizer');
+
+    // 6. Verify Settings Panel HTML Rendering (OAuth profile)
+    const oauthProfileConfig = {
+      id: 'profile-oauth-test',
+      name: 'OAuth Provider Profile',
+      color: '#8b5cf6',
+      auth: {
+        type: 'oauth2',
+        grantType: 'authorization_code',
+        redirectUri: 'http://127.0.0.1:41982/callback',
+        pkce: true,
+        authorizationUrl: 'https://auth.example.com/oauth/authorize',
+        tokenUrl: 'https://auth.example.com/oauth/token',
+        clientId: 'test-client-id'
+      },
+      variables: {},
+      headers: {}
+    };
+    const settingsHtml = getSettingsPanelHtml('profile', oauthProfileConfig, oauthProfileConfig.name);
+
+    assert(settingsHtml.includes('id="oauth-redirect-uri"'), 'Settings Panel must include #oauth-redirect-uri input');
+    assert(settingsHtml.includes('id="btn-copy-redirect-uri"'), 'Settings Panel must include #btn-copy-redirect-uri copy button');
+    assert(settingsHtml.includes('id="oauth-pkce"'), 'Settings Panel must include #oauth-pkce checkbox');
+    assert(settingsHtml.includes('id="btn-get-oauth-token"'), 'Settings Panel must include ⚡ Get New Access Token button');
+    assert(settingsHtml.includes('id="oauth-flow-status"'), 'Settings Panel must include #oauth-flow-status');
+
+    // 7. Verify StateManager Profile & Auth Persistence with redirectUri & pkce
+    const stateManager = new BlueByrdStateManager(mockContext);
+    const createdProfile = stateManager.createProfile('OAuth Saved Profile');
+    createdProfile.auth = {
+      type: 'oauth2',
+      grantType: 'authorization_code',
+      redirectUri: 'http://127.0.0.1:45123/my-redirect',
+      pkce: true,
+      clientId: 'my-client-id-123'
+    };
+    stateManager.saveProfile(createdProfile);
+
+    const reloadedProfile = stateManager.getProfile(createdProfile.id);
+    assert.strictEqual(reloadedProfile.auth?.redirectUri, 'http://127.0.0.1:45123/my-redirect', 'StateManager must persist custom redirectUri');
+    assert.strictEqual(reloadedProfile.auth?.pkce, true, 'StateManager must persist PKCE toggle');
+
+    console.log('✓ OAuth 2.0 Loopback Redirect Server, PKCE RFC 7636, Token Acquisition & Settings/Request Panel Parity verified');
+  }
+
+  console.log('\nAll 63 verification test suites passed successfully! 🎉');
   process.exit(0);
 })().catch(err => {
   console.error('Async test suite failure:', err);

@@ -8,6 +8,7 @@ import { VariableService } from '../../services/variableService';
 import { AuthService } from '../../services/authService';
 import { TokenService } from '../../services/tokenService';
 import { ExportService } from '../../services/exportService';
+import { OAuthService } from '../../services/oauthService';
 import { getRequestPanelHtml } from './requestPanelHtml';
 
 export class BlueByrdPanel {
@@ -572,6 +573,50 @@ export class BlueByrdPanel {
                 type: 'tokensUpdated',
                 tokens,
                 selectedId: newToken.id,
+              });
+            }
+          } else if (message.type === 'getOAuthToken') {
+            const payload = message.payload || {};
+            const activeProfileId = this.stateManager.getActiveProfileId() || 'global';
+            const profile = this.stateManager.getProfile(activeProfileId);
+            const envName = this.stateManager.getActiveEnvironmentName() || '';
+            const env = this.stateManager.getEnvironment(envName);
+
+            const result = await OAuthService.acquireToken(
+              {
+                grantType: payload.grantType || 'authorization_code',
+                clientId: payload.clientId,
+                clientSecret: payload.clientSecret,
+                authorizationUrl: payload.authorizationUrl,
+                tokenUrl: payload.tokenUrl,
+                redirectUri: payload.redirectUri,
+                scopes: payload.scopes,
+                pkce: payload.pkce,
+                username: payload.username,
+                password: payload.password,
+                profileId: activeProfileId,
+                profileName: profile?.name || 'Default Profile',
+                envName: envName,
+                envId: env?.id,
+              },
+              this.tokenService
+            );
+
+            if (result.success && result.token) {
+              vscode.window.showInformationMessage(`OAuth 2.0 token successfully acquired and saved to vault!`);
+              const allTokens = this.tokenService ? await this.tokenService.getTokens(activeProfileId) : [];
+              this.panel.webview.postMessage({
+                type: 'oauthTokenAcquired',
+                token: result.accessToken,
+                tokenId: result.token.id,
+                tokenName: result.token.tokenName,
+                tokens: allTokens,
+              });
+            } else {
+              vscode.window.showErrorMessage(`OAuth authorization failed: ${result.error || 'Unknown error'}`);
+              this.panel.webview.postMessage({
+                type: 'oauthTokenError',
+                error: result.error || 'OAuth authorization failed',
               });
             }
           } else if (message.type === 'exportCsv') {

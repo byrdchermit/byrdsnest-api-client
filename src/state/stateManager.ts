@@ -189,6 +189,8 @@ export class BlueByrdStateManager {
       clientSecret: auth?.clientSecret ?? '',
       authorizationUrl: auth?.authorizationUrl ?? '',
       tokenUrl: auth?.tokenUrl ?? '',
+      redirectUri: auth?.redirectUri ?? 'http://127.0.0.1:41982/callback',
+      pkce: auth?.pkce !== false,
       scopes: Array.isArray(auth?.scopes) ? auth.scopes : [],
       grantType: auth?.grantType ?? 'authorization_code',
     };

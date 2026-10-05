@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { Collection, CollectionFolder, EnvironmentConfig, Profile, ProfileAuth, ProfileGuardConfig, StoredToken } from '../../types';
 import { BlueByrdStateManager } from '../../state/stateManager';
 import { TokenService } from '../../services/tokenService';
+import { OAuthService } from '../../services/oauthService';
 import { getSettingsPanelHtml } from './settingsPanelHtml';
 import { BlueByrdPanel } from './requestPanel';
 
@@ -184,6 +185,50 @@ export class BlueByrdSettingsPanel {
               selectedId: newToken.id,
             });
           }
+        } else if (message.type === 'getOAuthToken') {
+          const payload = message.payload || {};
+          const activePid = (this.target === 'profile' ? (this.originalId || 'global') : this.stateManager.getActiveProfileId()) || 'global';
+          const prof = this.stateManager.getProfile(activePid);
+          const envName = this.target === 'environment' ? this.originalName : (this.stateManager.getActiveEnvironmentName() || '');
+          const env = this.stateManager.getEnvironment(envName);
+
+          const result = await OAuthService.acquireToken(
+            {
+              grantType: payload.grantType || 'authorization_code',
+              clientId: payload.clientId,
+              clientSecret: payload.clientSecret,
+              authorizationUrl: payload.authorizationUrl,
+              tokenUrl: payload.tokenUrl,
+              redirectUri: payload.redirectUri,
+              scopes: payload.scopes,
+              pkce: payload.pkce,
+              username: payload.username,
+              password: payload.password,
+              profileId: activePid,
+              profileName: prof?.name || 'Default Profile',
+              envName: envName,
+              envId: env?.id,
+            },
+            this.tokenService
+          );
+
+          if (result.success && result.token) {
+            vscode.window.showInformationMessage(`OAuth 2.0 token successfully acquired and saved to vault!`);
+            const allTokens = this.tokenService ? await this.tokenService.getTokens(activePid) : [];
+            this.panel.webview.postMessage({
+              type: 'oauthTokenAcquired',
+              token: result.accessToken,
+              tokenId: result.token.id,
+              tokenName: result.token.tokenName,
+              tokens: allTokens,
+            });
+          } else {
+            vscode.window.showErrorMessage(`OAuth authorization failed: ${result.error || 'Unknown error'}`);
+            this.panel.webview.postMessage({
+              type: 'oauthTokenError',
+              error: result.error || 'OAuth authorization failed',
+            });
+          }
         }
       },
       null,
@@ -229,6 +274,8 @@ export class BlueByrdSettingsPanel {
     scopes?: string[];
     grantType?: string;
     selectedTokenId?: string;
+    redirectUri?: string;
+    pkce?: boolean;
     inheritAuth?: boolean;
     variables: Record<string, string>;
     headers?: Record<string, string>;
@@ -253,6 +300,8 @@ export class BlueByrdSettingsPanel {
       scopes: payload.scopes,
       grantType: payload.grantType as any,
       selectedTokenId: payload.selectedTokenId,
+      redirectUri: payload.redirectUri,
+      pkce: payload.pkce,
     };
 
     if (this.target === 'profile') {

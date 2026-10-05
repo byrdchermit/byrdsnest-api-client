@@ -87,6 +87,8 @@ export type ProfileAuth = {
   clientSecret?: string;
   authorizationUrl?: string;
   tokenUrl?: string;
+  redirectUri?: string;
+  pkce?: boolean;
   scopes?: string[];
   grantType?: 'authorization_code' | 'client_credentials' | 'implicit' | 'password';
   selectedTokenId?: string;

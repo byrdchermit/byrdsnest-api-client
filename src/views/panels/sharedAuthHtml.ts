@@ -300,6 +300,8 @@ export function renderAuthFieldsHtml(
   const authTokenUrl = auth?.tokenUrl || '';
   const authScopes = Array.isArray(auth?.scopes) ? auth.scopes.join(' ') : (auth?.scopes || '');
   const authGrantType = auth?.grantType || 'authorization_code';
+  const authRedirectUri = auth?.redirectUri || 'http://127.0.0.1:41982/callback';
+  const authPkce = auth?.pkce !== false;
   const authUsername = auth?.username || '';
   const authPassword = auth?.password || '';
   const selectedTokenId = auth?.selectedTokenId;
@@ -476,7 +478,7 @@ export function renderAuthFieldsHtml(
               placeholder="e.g. client_12345"
             />
           </div>
-          <div class="form-group">
+          <div class="form-group" id="oauth-client-secret-group">
             <label class="form-label" for="oauth-client-secret">Client Secret</label>
             <div class="password-wrapper">
               <input
@@ -491,7 +493,7 @@ export function renderAuthFieldsHtml(
           </div>
         </div>
 
-        <div class="form-group">
+        <div class="form-group" id="oauth-auth-url-group">
           <label class="form-label" for="oauth-auth-url">Authorization URL</label>
           <input
             id="oauth-auth-url"
@@ -502,7 +504,7 @@ export function renderAuthFieldsHtml(
           />
         </div>
 
-        <div class="form-group">
+        <div class="form-group" id="oauth-token-url-group">
           <label class="form-label" for="oauth-token-url">Access Token URL</label>
           <input
             id="oauth-token-url"
@@ -523,6 +525,36 @@ export function renderAuthFieldsHtml(
             placeholder="e.g. openid profile email"
           />
           <span class="help-hint">Space or comma separated OAuth 2.0 permission scopes.</span>
+        </div>
+
+        <div class="form-group" id="oauth-redirect-group">
+          <label class="form-label" for="oauth-redirect-uri">Callback / Redirect URL</label>
+          <div style="display: flex; gap: 6px;">
+            <input
+              id="oauth-redirect-uri"
+              class="form-control"
+              type="text"
+              value="${escapeHtml(authRedirectUri)}"
+              placeholder="http://127.0.0.1:41982/callback"
+              style="flex: 1;"
+            />
+            <button type="button" id="btn-copy-redirect-uri" class="btn btn-secondary icon-btn" style="white-space: nowrap; font-size: 11px; padding: 4px 10px;" title="Copy Redirect URL to clipboard">📋 Copy</button>
+          </div>
+          <span class="help-hint">Register this redirect URL with your OAuth provider (e.g. Google, GitHub, Azure, Okta, Keycloak).</span>
+        </div>
+
+        <div class="form-group" id="oauth-pkce-group" style="display: flex; flex-direction: row; align-items: center; gap: 8px; margin-top: 4px;">
+          <input type="checkbox" id="oauth-pkce" ${authPkce ? 'checked' : ''} style="cursor: pointer;" />
+          <label for="oauth-pkce" style="font-size: 12px; color: var(--text); cursor: pointer; user-select: none;">
+            Use PKCE (Proof Key for Code Exchange with SHA-256)
+          </label>
+        </div>
+
+        <div style="margin: 12px 0 6px 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <button type="button" id="btn-get-oauth-token" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-weight: 600; cursor: pointer;">
+            ⚡ Get New Access Token
+          </button>
+          <span id="oauth-flow-status" style="font-size: 12px; color: var(--muted); display: none;"></span>
         </div>
       </div>
 
@@ -593,6 +625,104 @@ export function getSharedAuthClientScript(): string {
     if (authTypeSelect) {
       authTypeSelect.addEventListener('change', syncAuthVisibility);
       syncAuthVisibility();
+    }
+
+    // --- Dynamic OAuth Grant Type Field Visibility ---
+    const grantTypeSelect = document.getElementById('oauth-grant-type');
+    function syncGrantTypeVisibility() {
+      if (!grantTypeSelect) return;
+      const gt = grantTypeSelect.value;
+      const redirectGroup = document.getElementById('oauth-redirect-group');
+      const pkceGroup = document.getElementById('oauth-pkce-group');
+      const authUrlGroup = document.getElementById('oauth-auth-url-group') || document.getElementById('oauth-auth-url')?.closest?.('.form-group');
+      const tokenUrlGroup = document.getElementById('oauth-token-url-group') || document.getElementById('oauth-token-url')?.closest?.('.form-group');
+      const secretGroup = document.getElementById('oauth-client-secret-group') || document.getElementById('oauth-client-secret')?.closest?.('.form-group');
+
+      if (redirectGroup) redirectGroup.style.display = (gt === 'authorization_code' || gt === 'implicit') ? 'flex' : 'none';
+      if (pkceGroup) pkceGroup.style.display = (gt === 'authorization_code') ? 'flex' : 'none';
+      if (authUrlGroup) authUrlGroup.style.display = (gt === 'authorization_code' || gt === 'implicit') ? 'flex' : 'none';
+      if (tokenUrlGroup) tokenUrlGroup.style.display = (gt === 'implicit') ? 'none' : 'flex';
+      if (secretGroup) secretGroup.style.display = (gt === 'implicit') ? 'none' : 'flex';
+    }
+    if (grantTypeSelect) {
+      grantTypeSelect.addEventListener('change', syncGrantTypeVisibility);
+      syncGrantTypeVisibility();
+    }
+
+    // --- Copy Callback URL ---
+    const btnCopyRedirect = document.getElementById('btn-copy-redirect-uri');
+    if (btnCopyRedirect) {
+      btnCopyRedirect.addEventListener('click', () => {
+        const uriInput = document.getElementById('oauth-redirect-uri');
+        if (uriInput) {
+          navigator.clipboard.writeText(uriInput.value);
+          btnCopyRedirect.textContent = 'Copied!';
+          setTimeout(() => { btnCopyRedirect.textContent = '📋 Copy'; }, 1500);
+        }
+      });
+    }
+
+    // --- Get New Access Token Button ---
+    const btnGetOAuthToken = document.getElementById('btn-get-oauth-token');
+    const oauthStatus = document.getElementById('oauth-flow-status');
+    if (btnGetOAuthToken) {
+      btnGetOAuthToken.addEventListener('click', () => {
+        const grantType = document.getElementById('oauth-grant-type')?.value || 'authorization_code';
+        const clientId = (document.getElementById('oauth-client-id')?.value || '').trim();
+        const clientSecret = (document.getElementById('oauth-client-secret')?.value || '').trim();
+        const authUrl = (document.getElementById('oauth-auth-url')?.value || '').trim();
+        const tokenUrl = (document.getElementById('oauth-token-url')?.value || '').trim();
+        const redirectUri = (document.getElementById('oauth-redirect-uri')?.value || 'http://127.0.0.1:41982/callback').trim();
+        const scopes = (document.getElementById('oauth-scopes')?.value || '').trim();
+        const pkce = document.getElementById('oauth-pkce')?.checked ?? true;
+        const username = (document.getElementById('basic-username')?.value || '').trim();
+        const password = (document.getElementById('basic-password')?.value || '').trim();
+
+        if (grantType === 'authorization_code' || grantType === 'implicit') {
+          if (!authUrl) {
+            alert('Please specify an Authorization URL.');
+            document.getElementById('oauth-auth-url')?.focus();
+            return;
+          }
+        }
+        if (grantType !== 'implicit') {
+          if (!tokenUrl) {
+            alert('Please specify an Access Token URL.');
+            document.getElementById('oauth-token-url')?.focus();
+            return;
+          }
+        }
+        if (!clientId && grantType !== 'password') {
+          alert('Please enter a Client ID.');
+          document.getElementById('oauth-client-id')?.focus();
+          return;
+        }
+
+        btnGetOAuthToken.disabled = true;
+        if (oauthStatus) {
+          oauthStatus.textContent = grantType === 'authorization_code'
+            ? 'Waiting for browser authorization...'
+            : 'Fetching access token...';
+          oauthStatus.style.color = 'var(--muted)';
+          oauthStatus.style.display = 'inline-block';
+        }
+
+        vscode.postMessage({
+          type: 'getOAuthToken',
+          payload: {
+            grantType,
+            clientId,
+            clientSecret,
+            authorizationUrl: authUrl,
+            tokenUrl,
+            redirectUri,
+            scopes,
+            pkce,
+            username,
+            password,
+          }
+        });
+      });
     }
 
     // --- Password Peek Toggles ---
@@ -748,8 +878,37 @@ export function getSharedAuthClientScript(): string {
 
     window.addEventListener('message', event => {
       const data = event.data;
-      if (data && data.type === 'tokensUpdated') {
+      if (!data) return;
+      if (data.type === 'tokensUpdated') {
         updateAllTokenSelects(data.tokens, data.selectedId);
+      } else if (data.type === 'oauthTokenAcquired') {
+        const btnGet = document.getElementById('btn-get-oauth-token');
+        if (btnGet) btnGet.disabled = false;
+        const statusEl = document.getElementById('oauth-flow-status');
+        if (statusEl) {
+          statusEl.textContent = '✓ Token acquired & saved to vault!';
+          statusEl.style.color = 'var(--success, #4ec9b0)';
+          statusEl.style.display = 'inline-block';
+          setTimeout(() => { if (statusEl) statusEl.style.display = 'none'; }, 6000);
+        }
+        const tokenInput = document.getElementById('oauth-token');
+        if (tokenInput) {
+          tokenInput.value = data.token || '';
+          tokenInput.dispatchEvent(new Event('input', { bubbles: true }));
+          tokenInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (data.tokens) {
+          updateAllTokenSelects(data.tokens, data.tokenId);
+        }
+      } else if (data.type === 'oauthTokenError') {
+        const btnGet = document.getElementById('btn-get-oauth-token');
+        if (btnGet) btnGet.disabled = false;
+        const statusEl = document.getElementById('oauth-flow-status');
+        if (statusEl) {
+          statusEl.textContent = '✕ ' + (data.error || 'Failed to acquire token');
+          statusEl.style.color = 'var(--danger, #f14c4c)';
+          statusEl.style.display = 'inline-block';
+        }
       }
     });
 
@@ -767,6 +926,8 @@ export function getSharedAuthClientScript(): string {
       let clientSecret = undefined;
       let authorizationUrl = undefined;
       let tokenUrl = undefined;
+      let redirectUri = undefined;
+      let pkce = undefined;
       let scopes = undefined;
       let grantType = undefined;
       let username = undefined;
@@ -792,6 +953,8 @@ export function getSharedAuthClientScript(): string {
         clientSecret = (document.getElementById('oauth-client-secret')?.value || '').trim();
         authorizationUrl = (document.getElementById('oauth-auth-url')?.value || '').trim();
         tokenUrl = (document.getElementById('oauth-token-url')?.value || '').trim();
+        redirectUri = (document.getElementById('oauth-redirect-uri')?.value || 'http://127.0.0.1:41982/callback').trim();
+        pkce = document.getElementById('oauth-pkce')?.checked ?? true;
         const scopesRaw = (document.getElementById('oauth-scopes')?.value || '').trim();
         scopes = scopesRaw ? scopesRaw.split(/[\\s,]+/).filter(Boolean) : [];
         selectedTokenId = document.getElementById('oauth-token-select')?.value || undefined;
@@ -812,6 +975,8 @@ export function getSharedAuthClientScript(): string {
         clientSecret,
         authorizationUrl,
         tokenUrl,
+        redirectUri,
+        pkce,
         scopes,
         grantType,
         username,
