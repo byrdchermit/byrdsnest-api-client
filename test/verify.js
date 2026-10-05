@@ -4279,7 +4279,23 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     console.log('✓ OAuth 2.0 Loopback Redirect Server, PKCE RFC 7636, Token Acquisition & Settings/Request Panel Parity verified');
   }
 
-  console.log('\nAll 63 verification test suites passed successfully! 🎉');
+  // 64. Test Pinned Settings Headers, Locked Context Bar & Sticky Table Headers Layout
+  {
+    const stateManager = new BlueByrdStateManager(mockContext);
+    const mockState = stateManager.getState();
+    const colSettingsHtml = getSettingsPanelHtml('collection', mockState.collections[0], mockState.collections[0].name);
+
+    // Verify root layout prevents body scroll and pins container
+    assert(colSettingsHtml.includes('overflow: hidden;'), 'Settings Panel root must have overflow: hidden');
+    assert(colSettingsHtml.includes('flex-shrink: 0;'), 'Settings Panel headers must have flex-shrink: 0');
+    assert(colSettingsHtml.includes('.tab-content {'), 'Settings Panel must define .tab-content');
+    assert(colSettingsHtml.includes('overflow-y: auto;'), 'Settings Panel tab-content must have overflow-y: auto');
+    assert(colSettingsHtml.includes('position: sticky;'), 'Settings Panel table headers must be sticky');
+
+    console.log('✓ Pinned Settings Headers, Locked Context Bar & Sticky Table Headers Layout verified');
+  }
+
+  console.log('\nAll 64 verification test suites passed successfully! 🎉');
   process.exit(0);
 })().catch(err => {
   console.error('Async test suite failure:', err);

@@ -103,13 +103,18 @@ export function getSettingsPanelHtml(
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
       height: 100%;
+      min-height: 100%;
       background: var(--bg);
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 13px;
+      overflow: hidden;
     }
     body {
       padding: 14px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
     }
 
     .container {
@@ -119,7 +124,10 @@ export function getSettingsPanelHtml(
       display: flex;
       flex-direction: column;
       gap: 12px;
-      min-height: calc(100vh - 28px);
+      height: 100%;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
     }
 
     /* Top Context & Action Bar */
@@ -133,6 +141,7 @@ export function getSettingsPanelHtml(
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 8px 12px;
+      flex-shrink: 0;
     }
     .context-left {
       display: flex;
@@ -217,6 +226,7 @@ export function getSettingsPanelHtml(
       display: flex;
       flex-direction: column;
       gap: 10px;
+      flex-shrink: 0;
     }
     .env-url-banner label {
       font-weight: 600;
@@ -249,7 +259,9 @@ export function getSettingsPanelHtml(
       display: flex;
       flex-direction: column;
       flex: 1;
-      min-height: 400px;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
     }
     .tab-header {
       display: flex;
@@ -257,6 +269,7 @@ export function getSettingsPanelHtml(
       border-bottom: 1px solid var(--border);
       background: rgba(0, 0, 0, 0.15);
       padding: 0 8px;
+      flex-shrink: 0;
     }
     .tab-btn {
       background: transparent;
@@ -299,7 +312,9 @@ export function getSettingsPanelHtml(
       display: none;
       padding: 16px;
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
+      overflow-x: hidden;
     }
     .tab-content.active {
       display: flex;
@@ -312,12 +327,16 @@ export function getSettingsPanelHtml(
       display: grid;
       grid-template-columns: 32px 1.2fr 1.8fr 70px 36px;
       gap: 8px;
-      padding: 0 4px 6px 4px;
+      padding: 6px 4px;
       font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
       color: var(--muted);
       border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: -16px;
+      background: var(--panel);
+      z-index: 5;
     }
     .param-row {
       display: grid;
@@ -361,6 +380,8 @@ export function getSettingsPanelHtml(
     .notes-box {
       width: 100%;
       min-height: 240px;
+      flex: 1;
+      height: 100%;
       background: var(--surface);
       border: 1px solid var(--border);
       color: var(--text);
@@ -371,6 +392,7 @@ export function getSettingsPanelHtml(
       line-height: 1.5;
       resize: vertical;
       outline: none;
+      box-sizing: border-box;
     }
     .notes-box:focus { border-color: var(--primary); }
   </style>
