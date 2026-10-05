@@ -201,7 +201,7 @@ Welcome to the initial public beta release of **bluebyrd**, the lightweight, nat
   - **Multi-Resource & Full Workspace Backups**: Export and import complete workspaces or individual collections/environments with automatic normalization.
   - Contextual sidebar tree buttons and Command Palette shortcuts for all import and export actions.
 - **Automated GitHub Releases Update Notifier**:
-  - Background daily checks against the official GitHub Releases API (`byrdchermit/blue-byrd-api`).
+  - Background daily checks against the official GitHub Releases API (`byrdchermit/byrdsnest-api-client`).
   - Interactive update notification prompt with direct download and changelog view.
   - On-demand update check command (`bluebyrd: Check for Updates`) in the VS Code Command Palette.
 - **VS Code Native UI & History**:

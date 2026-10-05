@@ -18,7 +18,7 @@ export class UpdateService {
   private readonly context: vscode.ExtensionContext;
   private readonly currentVersion: string;
   private readonly repoOwner = 'byrdchermit';
-  private readonly repoName = 'blue-byrd-api';
+  private readonly repoName = 'byrdsnest-api-client';
   private readonly lastCheckKey = 'bluebyrd.lastUpdateCheck';
   private readonly checkIntervalMs = 24 * 60 * 60 * 1000; // 24 hours
 
