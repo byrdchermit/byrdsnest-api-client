@@ -4295,7 +4295,74 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     console.log('✓ Pinned Settings Headers, Locked Context Bar & Sticky Table Headers Layout verified');
   }
 
-  console.log('\nAll 64 verification test suites passed successfully! 🎉');
+  // 65. Test Mid-Flight Request Cancellation & Folder Auth Inheritance + Dirty Tracking
+  {
+    const stateManager = new BlueByrdStateManager(mockContext);
+    const authService65 = new AuthService(stateManager);
+    const httpService65 = new HttpService(stateManager, new VariableService(stateManager), authService65, new ScriptService(stateManager));
+
+    // 1. Verify Mid-Flight Request Cancellation
+    const cancelController = new AbortController();
+    cancelController.abort();
+
+    const cancelResult = await httpService65.executeRequest({
+      url: 'http://example.com/test',
+      method: 'GET'
+    }, cancelController.signal);
+
+    assert.strictEqual(cancelResult.ok, false, 'Cancelled request must not be ok');
+    assert.strictEqual(cancelResult.statusText, 'Cancelled', 'Cancelled request must have statusText "Cancelled"');
+    assert(cancelResult.body.includes('Request cancelled by user mid-flight'), 'Diagnostic must explain user cancellation');
+
+    // 2. Verify Folder Auth Inheritance from Parent Collection
+    const colWithAuth = {
+      id: 'col-auth-test',
+      name: 'Auth Test Collection',
+      folders: [
+        {
+          id: 'folder-sub-auth',
+          name: 'Sub Folder',
+          requests: [],
+          auth: { inheritFromCollection: true }
+        }
+      ],
+      requests: [],
+      auth: {
+        type: 'bearer',
+        token: 'col-bearer-token-12345'
+      }
+    };
+    stateManager.saveCollection(colWithAuth);
+
+    const folderAuthHeaders = authService65.resolveAuthHeaders(
+      undefined,
+      undefined,
+      colWithAuth.id,
+      'folder-sub-auth',
+      {},
+      { inheritFromFolder: true, inheritFromCollection: true, auth: { type: 'none' } }
+    );
+    assert.strictEqual(folderAuthHeaders['Authorization'], 'Bearer col-bearer-token-12345', 'Folder must inherit bearer auth from parent collection');
+
+    // 3. Verify Request Panel Auth Inheritance HTML & Send/Cancel Toggle
+    const reqHtml = getRequestPanelHtml({}, stateManager.getState());
+    assert(reqHtml.includes('Inherit from Parent (Collection, Folder, Environment, Profile)'), 'Request panel must list full parent hierarchy option');
+    assert(reqHtml.includes('Inherit from Collection / Folder only'), 'Request panel must list collection/folder option');
+    assert(reqHtml.includes('btn-cancel-req'), 'Request panel must include btn-cancel-req styling');
+    assert(reqHtml.includes('isRequestInFlight'), 'Request panel must manage in-flight state');
+
+    // 4. Verify Folder Settings HTML & Dirty Tracking
+    const folderObj = colWithAuth.folders[0];
+    const folderSettingsHtml = getSettingsPanelHtml('folder', folderObj, folderObj.name, colWithAuth.name, undefined, undefined, [], colWithAuth.auth);
+    assert(folderSettingsHtml.includes('id="inherited-auth-banner"'), 'Folder Settings HTML must include inherited auth banner');
+    assert(folderSettingsHtml.includes('Inheriting from Collection:'), 'Folder Settings HTML banner must show collection inheritance');
+    assert(folderSettingsHtml.includes('#btn-save.dirty'), 'Folder Settings HTML must include dirty save button styles');
+    assert(folderSettingsHtml.includes('captureDirtySnapshot'), 'Folder Settings HTML must include dirty snapshot checking');
+
+    console.log('✓ Mid-Flight Request Cancellation & Folder Auth Inheritance + Dirty Tracking verified');
+  }
+
+  console.log('\nAll 65 verification test suites passed successfully! 🎉');
   process.exit(0);
 })().catch(err => {
   console.error('Async test suite failure:', err);

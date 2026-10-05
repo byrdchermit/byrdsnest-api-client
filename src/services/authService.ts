@@ -87,14 +87,18 @@ export class AuthService {
     const inheritFolder = requestAuth?.inheritFromFolder !== false;
 
     // 1. Folder level
-    if (inheritFolder && folder?.auth?.auth && folder.auth.auth.type !== 'none') {
-      applyAuth(folder.auth.auth);
+    const folderAuthObj = (folder?.auth as any)?.auth || (folder?.auth as any);
+    const folderInheritsCollection = (folder?.auth as any)?.inheritFromCollection !== false;
+    if (inheritFolder && folderAuthObj && folderAuthObj.type && folderAuthObj.type !== 'none') {
+      applyAuth(folderAuthObj);
       return merged;
     }
 
     // 2. Collection level
-    if (inheritCollection && collection?.auth?.auth && collection.auth.auth.type !== 'none') {
-      applyAuth(collection.auth.auth);
+    const colAuthObj = (collection?.auth as any)?.auth || (collection?.auth as any);
+    const allowCollection = inheritCollection && (folder ? folderInheritsCollection : true);
+    if (allowCollection && colAuthObj && colAuthObj.type && colAuthObj.type !== 'none') {
+      applyAuth(colAuthObj);
       return merged;
     }
 
@@ -110,7 +114,13 @@ export class AuthService {
       return merged;
     }
 
-    // 5. Shared / Global profile level fallback
+    // 5. Shared / Global fallback
+    const globalAuth = (this.stateManager as any).getSharedGlobalAuth ? (this.stateManager as any).getSharedGlobalAuth() : undefined;
+    if (inheritProfile && globalAuth && globalAuth.type && globalAuth.type !== 'none') {
+      applyAuth(globalAuth);
+      return merged;
+    }
+
     if (inheritProfile) {
       const globalProfile = this.stateManager.getProfile('global');
       if (globalProfile?.auth && globalProfile.auth.type !== 'none') {

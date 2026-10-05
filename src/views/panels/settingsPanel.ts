@@ -18,6 +18,8 @@ export class BlueByrdSettingsPanel {
   private readonly originalName: string;
   private readonly originalId?: string;
   private readonly collectionName?: string;
+  private isDirty: boolean = false;
+  private baseTitle: string = '';
   private disposables: vscode.Disposable[] = [];
 
   private static getPanelKey(
@@ -96,6 +98,7 @@ export class BlueByrdSettingsPanel {
     this.originalName = name;
     this.originalId = itemId;
     this.collectionName = collectionName;
+    this.baseTitle = panel.title;
     this.stateManager = stateManager;
     this.tokenService = tokenService;
 
@@ -116,6 +119,9 @@ export class BlueByrdSettingsPanel {
       ? this.tokenService.getAllTokens().filter((t) => t.profileId === profileId || t.profileId === 'global')
       : [];
 
+    const parentCol = this.target === 'folder' ? this.stateManager.getCollection(this.collectionName) : undefined;
+    const parentAuth = parentCol?.auth;
+
     this.panel.webview.html = getSettingsPanelHtml(
       target,
       item,
@@ -123,7 +129,8 @@ export class BlueByrdSettingsPanel {
       collectionName,
       allEnvironments,
       allProfiles,
-      availableTokens
+      availableTokens,
+      parentAuth
     );
 
     this.panel.onDidDispose(
@@ -150,6 +157,12 @@ export class BlueByrdSettingsPanel {
       async (message) => {
         if (message.type === 'cancel') {
           this.panel.dispose();
+          return;
+        }
+
+        if (message.type === 'dirtyStateChanged') {
+          this.isDirty = !!message.isDirty;
+          this.panel.title = this.isDirty ? `● ${this.baseTitle}` : this.baseTitle;
           return;
         }
 
@@ -383,9 +396,11 @@ export class BlueByrdSettingsPanel {
 
     vscode.window.showInformationMessage(`${this.target.toUpperCase()} settings saved.`);
     vscode.commands.executeCommand('byrdsnestApiClient.refreshExplorer');
-    BlueByrdPanel.broadcastStateUpdated();
+    this.isDirty = false;
+    this.baseTitle = `${nextName} Settings`;
     try {
-      this.panel.title = `${nextName} Settings`;
+      this.panel.title = this.baseTitle;
+      this.panel.webview.postMessage({ type: 'settingsSaved' });
     } catch {
       // Panel might already be disposed
     }

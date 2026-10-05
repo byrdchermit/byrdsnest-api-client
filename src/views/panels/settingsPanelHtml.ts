@@ -8,7 +8,8 @@ export function getSettingsPanelHtml(
   collectionName?: string,
   allEnvironments?: Array<{ id: string; name: string; baseUrl?: string; inheritsFrom?: string }>,
   allProfiles?: Array<{ id: string; name: string }>,
-  availableTokens: StoredToken[] = []
+  availableTokens: StoredToken[] = [],
+  parentAuth?: any
 ): string {
   const isProfile = target === 'profile';
   const isEnv = target === 'environment';
@@ -38,6 +39,19 @@ export function getSettingsPanelHtml(
     : isFolder
     ? (folder?.auth?.inheritFromProfile !== false && folder?.auth?.inheritFromCollection !== false)
     : false;
+
+  const resolvedParentAuth = (parentAuth as any)?.auth || parentAuth;
+  const parentAuthType = resolvedParentAuth?.type && resolvedParentAuth.type !== 'none' ? resolvedParentAuth.type : 'none';
+  let parentAuthDetail = '';
+  if (parentAuthType === 'bearer') {
+    parentAuthDetail = resolvedParentAuth.selectedTokenId ? 'Vault Token' : (resolvedParentAuth.token ? 'Bearer Token' : 'Bearer');
+  } else if (parentAuthType === 'oauth2') {
+    parentAuthDetail = resolvedParentAuth.grantType === 'client_credentials' ? 'Client Credentials' : 'OAuth 2.0';
+  } else if (parentAuthType === 'apiKey') {
+    parentAuthDetail = resolvedParentAuth.headerName || resolvedParentAuth.keyName || 'X-API-Key';
+  } else if (parentAuthType === 'basic') {
+    parentAuthDetail = resolvedParentAuth.username ? `User: ${resolvedParentAuth.username}` : 'Basic';
+  }
 
   const normalizedVariables: Record<string, string> = {};
   if (Array.isArray(item?.variables)) {
@@ -203,6 +217,16 @@ export function getSettingsPanelHtml(
       color: var(--primary-fg);
     }
     .btn-primary:hover { filter: brightness(1.1); }
+    #btn-save.dirty {
+      border-color: #f59e0b !important;
+      color: #ffffff !important;
+      background: #d97706 !important;
+      box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+    }
+    #btn-save.dirty:hover {
+      background: #b45309 !important;
+      filter: brightness(1.1);
+    }
     .btn-secondary {
       background: var(--surface);
       border-color: var(--border);
@@ -601,19 +625,47 @@ export function getSettingsPanelHtml(
       <!-- Tab 3: Authentication -->
       <section id="tab-auth" class="tab-content">
         <div class="auth-grid">
-          ${isCol || isFolder ? `
-          <div class="form-group" style="padding: 10px 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px;">
+          ${isFolder ? `
+          <div class="form-group" style="padding: 12px 14px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px;">
             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; font-size: 13px;">
               <input type="checkbox" id="auth-inherit" ${isInherited ? 'checked' : ''} style="cursor: pointer;" />
-              <span>Inherit authentication from parent</span>
+              <span>Inherit authentication from collection ${collectionName ? `"${escapeHtml(collectionName)}"` : ''}</span>
             </label>
-            <span class="help-hint" style="margin-left: 22px; margin-top: 4px;">
-              When enabled, requests in this ${target} automatically inherit credentials from the parent Collection, Environment, or Profile.
+            <span class="help-hint" style="margin-left: 22px; margin-top: 4px; display: block;">
+              When enabled, all requests inside this folder automatically use the collection's credentials without needing to reconfigure them.
+            </span>
+
+            <div id="inherited-auth-banner" style="display: ${isInherited ? 'flex' : 'none'}; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(78, 201, 176, 0.08); border: 1px solid rgba(78, 201, 176, 0.25); border-radius: 6px; margin-top: 10px;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 16px;">🔐</span>
+                <div>
+                  <div style="font-weight: 600; font-size: 12px; color: var(--text);">
+                    Inheriting from Collection: <strong style="color: #4ec9b0;">${escapeHtml(collectionName || 'Collection')}</strong>
+                  </div>
+                  <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">
+                    Authentication: <strong style="text-transform: capitalize; color: var(--text);">${escapeHtml(parentAuthType)}</strong>${parentAuthDetail ? ` · ${escapeHtml(parentAuthDetail)}` : ''}
+                  </div>
+                </div>
+              </div>
+              <span class="pill" style="font-size: 10px; background: rgba(78, 201, 176, 0.15); color: #4ec9b0; border: 1px solid rgba(78, 201, 176, 0.3);">Inherited</span>
+            </div>
+          </div>
+          ` : isCol ? `
+          <div class="form-group" style="padding: 12px 14px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; font-size: 13px;">
+              <input type="checkbox" id="auth-inherit" ${isInherited ? 'checked' : ''} style="cursor: pointer;" />
+              <span>Inherit authentication from parent (Profile / Environment)</span>
+            </label>
+            <span class="help-hint" style="margin-left: 22px; margin-top: 4px; display: block;">
+              When enabled, requests in this collection automatically inherit credentials from the active Environment or Profile.
             </span>
           </div>
           ` : ''}
 
-          ${renderAuthFieldsHtml(auth, target, availableTokens)}
+          <div id="custom-auth-fields-wrapper" style="${isFolder && isInherited ? 'opacity: 0.5; pointer-events: none;' : ''}">
+            ${isFolder ? `<div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.5px;">Custom Folder Credentials (Override)</div>` : ''}
+            ${renderAuthFieldsHtml(auth, target, availableTokens)}
+          </div>
         </div>
       </section>
 
@@ -785,6 +837,7 @@ export function getSettingsPanelHtml(
           delBtn.addEventListener('click', () => {
             row.remove();
             updateVarCount();
+            checkDirtyState();
           });
 
           row.appendChild(enabledCheckbox);
@@ -797,7 +850,10 @@ export function getSettingsPanelHtml(
           updateVarCount();
         }
 
-        document.getElementById('btn-add-var').addEventListener('click', () => addVarRow());
+        document.getElementById('btn-add-var').addEventListener('click', () => {
+          addVarRow();
+          checkDirtyState();
+        });
 
         // Populate initial variables from object
         const varEntries = Object.entries(initialVars);
@@ -850,6 +906,7 @@ export function getSettingsPanelHtml(
           delBtn.addEventListener('click', () => {
             row.remove();
             updateHeaderCount();
+            checkDirtyState();
           });
 
           row.appendChild(enabledCheckbox);
@@ -861,7 +918,10 @@ export function getSettingsPanelHtml(
           updateHeaderCount();
         }
 
-        document.getElementById('btn-add-header').addEventListener('click', () => addHeaderRow());
+        document.getElementById('btn-add-header').addEventListener('click', () => {
+          addHeaderRow();
+          checkDirtyState();
+        });
 
         // Populate initial headers
         const headerEntries = Object.entries(initialHeaders);
@@ -873,6 +933,23 @@ export function getSettingsPanelHtml(
 
         // --- Dynamic Auth Fields & Visibility ---
         ${getSharedAuthClientScript()}
+
+        const authInheritCb = document.getElementById('auth-inherit');
+        const inheritedAuthBanner = document.getElementById('inherited-auth-banner');
+        const customAuthFieldsWrapper = document.getElementById('custom-auth-fields-wrapper');
+
+        if (authInheritCb) {
+          authInheritCb.addEventListener('change', () => {
+            if (inheritedAuthBanner) {
+              inheritedAuthBanner.style.display = authInheritCb.checked ? 'flex' : 'none';
+            }
+            if (customAuthFieldsWrapper) {
+              customAuthFieldsWrapper.style.opacity = authInheritCb.checked ? '0.5' : '1';
+              customAuthFieldsWrapper.style.pointerEvents = authInheritCb.checked ? 'none' : 'auto';
+            }
+            checkDirtyState();
+          });
+        }
 
         // --- Dynamic Parent Base URL Update ---
         const envParentSelect = document.getElementById('env-parent');
@@ -955,6 +1032,7 @@ export function getSettingsPanelHtml(
             btn.style.borderColor = match ? 'var(--text, #ffffff)' : 'transparent';
             btn.style.transform = match ? 'scale(1.15)' : 'scale(1)';
           });
+          checkDirtyState();
         }
 
         swatchBtns.forEach(btn => {
@@ -983,8 +1061,130 @@ export function getSettingsPanelHtml(
           guardEnabledCb.addEventListener('change', () => {
             guardSection.style.opacity = guardEnabledCb.checked ? '1' : '0.5';
             guardSection.style.pointerEvents = guardEnabledCb.checked ? 'auto' : 'none';
+            checkDirtyState();
           });
         }
+
+        // --- Dirty State Tracking & Ctrl+S Shortcut ---
+        let baselineDirtySnapshot = null;
+        let isCurrentlyDirty = false;
+
+        function captureDirtySnapshot() {
+          try {
+            const name = (document.getElementById('item-name')?.value || '').trim();
+            const bInput = document.getElementById('base-url') || document.getElementById('col-base-url');
+            const bUrl = bInput ? bInput.value.trim() : '';
+            const envBDisabled = document.getElementById('base-url-disabled');
+            const colBDisabled = document.getElementById('col-base-url-disabled');
+            const bDisabled = !!((envBDisabled && envBDisabled.checked) || (colBDisabled && colBDisabled.checked));
+            const colPref = document.getElementById('col-base-url-pref');
+            const bPref = colPref ? colPref.value : '';
+            const eParent = document.getElementById('env-parent');
+            const inhFrom = eParent ? eParent.value.trim() : '';
+            const profScope = document.getElementById('env-profile') || document.getElementById('col-profile');
+            const pId = profScope ? profScope.value.trim() : '';
+            const col = document.getElementById('prof-color-input')?.value || document.getElementById('prof-color-picker')?.value || '';
+            const inhCheck = document.getElementById('auth-inherit');
+            const inhAuth = inhCheck ? inhCheck.checked : true;
+            const aValues = typeof extractAuthValues === 'function' ? extractAuthValues() : {};
+            const nts = (document.getElementById('item-notes')?.value || '').trim();
+
+            let grds = null;
+            if (guardEnabledCb) {
+              grds = {
+                enabled: guardEnabledCb.checked,
+                warnBeforeSend: document.getElementById('guard-warn-send')?.checked || false,
+                warnMessage: document.getElementById('guard-warn-msg')?.value?.trim() || '',
+                blockedMethods: Array.from(document.querySelectorAll('.guard-method-cb:checked')).map(cb => cb.value).sort(),
+                requireKeywordConfirmation: document.getElementById('guard-keyword-req')?.checked || false,
+                confirmationKeyword: document.getElementById('guard-keyword')?.value?.trim() || 'CONFIRM'
+              };
+            }
+
+            const vars = [];
+            if (varRowsContainer) {
+              varRowsContainer.querySelectorAll('.param-row').forEach(row => {
+                const en = row.querySelector('[data-role="enabled"]')?.checked ?? true;
+                const k = (row.querySelector('[data-role="key"]')?.value || '').trim();
+                const v = row.querySelector('[data-role="value"]')?.value || '';
+                const m = row.querySelector('[data-role="mask"]')?.checked ?? false;
+                vars.push({ en, k, v, m });
+              });
+            }
+
+            const hdrs = [];
+            if (headerRowsContainer) {
+              headerRowsContainer.querySelectorAll('.param-row').forEach(row => {
+                const en = row.querySelector('[data-role="enabled"]')?.checked ?? true;
+                const k = (row.querySelector('[data-role="key"]')?.value || '').trim();
+                const v = row.querySelector('[data-role="value"]')?.value || '';
+                hdrs.push({ en, k, v });
+              });
+            }
+
+            return JSON.stringify({
+              name,
+              color: col,
+              baseUrl: bUrl,
+              baseUrlDisabled: bDisabled,
+              baseUrlPreference: bPref,
+              inheritsFrom: inhFrom,
+              profileId: pId,
+              inheritAuth: inhAuth,
+              authValues: aValues,
+              notes: nts,
+              guards: grds,
+              variables: vars,
+              headers: hdrs
+            });
+          } catch (e) {
+            return '';
+          }
+        }
+
+        function updateDirtyUi(dirty) {
+          const btnSave = document.getElementById('btn-save');
+          if (btnSave) {
+            if (dirty) {
+              btnSave.classList.add('dirty');
+              btnSave.textContent = 'Save Changes *';
+            } else {
+              btnSave.classList.remove('dirty');
+              btnSave.textContent = 'Save Changes';
+            }
+          }
+        }
+
+        function checkDirtyState() {
+          if (baselineDirtySnapshot === null) return;
+          const current = captureDirtySnapshot();
+          const dirty = current !== baselineDirtySnapshot;
+          if (dirty !== isCurrentlyDirty) {
+            isCurrentlyDirty = dirty;
+            updateDirtyUi(dirty);
+            vscode.postMessage({ type: 'dirtyStateChanged', isDirty: dirty });
+          }
+        }
+
+        baselineDirtySnapshot = captureDirtySnapshot();
+        setTimeout(() => {
+          if (!isCurrentlyDirty) {
+            baselineDirtySnapshot = captureDirtySnapshot();
+          }
+        }, 100);
+
+        document.addEventListener('input', checkDirtyState, true);
+        document.addEventListener('change', checkDirtyState, true);
+
+        window.addEventListener('message', (event) => {
+          const data = event.data;
+          if (!data) return;
+          if (data.type === 'settingsSaved') {
+            baselineDirtySnapshot = captureDirtySnapshot();
+            isCurrentlyDirty = false;
+            updateDirtyUi(false);
+          }
+        });
 
         // --- Save & Cancel Actions ---
         document.getElementById('btn-cancel').addEventListener('click', () => {
@@ -1080,8 +1280,14 @@ export function getSettingsPanelHtml(
           });
         });
 
-        // Intercept Ctrl+Z and Ctrl+Y in capture phase so VS Code cannot steal them
+        // Intercept Ctrl+S, Ctrl+Z and Ctrl+Y in capture phase so VS Code cannot steal them
         window.addEventListener('keydown', (e) => {
+          if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+            e.preventDefault();
+            e.stopPropagation();
+            document.getElementById('btn-save')?.click();
+            return;
+          }
           const isZ = e.key === 'z' || e.key === 'Z';
           const isY = e.key === 'y' || e.key === 'Y';
           if ((e.ctrlKey || e.metaKey) && (isZ || isY)) {

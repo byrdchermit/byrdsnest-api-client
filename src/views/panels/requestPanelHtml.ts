@@ -438,6 +438,15 @@ export function getRequestPanelHtml(
       font-weight: 600;
       box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.4);
     }
+    .btn-cancel-req {
+      background: #ef4444 !important;
+      border-color: #dc2626 !important;
+      color: #ffffff !important;
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.4) !important;
+    }
+    .btn-cancel-req:hover {
+      background: #dc2626 !important;
+    }
 
     .btn-group {
       display: inline-flex;
@@ -2081,15 +2090,18 @@ export function getRequestPanelHtml(
             <div class="form-group">
               <label class="form-label" for="auth-inheritance">Inheritance</label>
               <select id="auth-inheritance" class="form-control">
-                <option value="both" ${context.auth?.inheritFromProfile !== false && context.auth?.inheritFromEnvironment !== false ? 'selected' : ''}>Inherit from Profile + Environment</option>
-                <option value="profile" ${context.auth?.inheritFromProfile !== false && context.auth?.inheritFromEnvironment === false ? 'selected' : ''}>Inherit from Profile</option>
-                <option value="environment" ${context.auth?.inheritFromProfile === false && context.auth?.inheritFromEnvironment !== false ? 'selected' : ''}>Inherit from Environment</option>
-                <option value="none" ${context.auth?.inheritFromProfile === false && context.auth?.inheritFromEnvironment === false ? 'selected' : ''}>No Inheritance (Manual Override)</option>
+                <option value="both" ${context.auth?.inheritFromProfile !== false && context.auth?.inheritFromEnvironment !== false && context.auth?.inheritFromCollection !== false ? 'selected' : ''}>Inherit from Parent (Collection, Folder, Environment, Profile)</option>
+                <option value="collection" ${context.auth?.inheritFromCollection !== false && context.auth?.inheritFromProfile === false && context.auth?.inheritFromEnvironment === false ? 'selected' : ''}>Inherit from Collection / Folder only</option>
+                <option value="environment" ${context.auth?.inheritFromEnvironment !== false && context.auth?.inheritFromProfile === false && context.auth?.inheritFromCollection === false ? 'selected' : ''}>Inherit from Environment only</option>
+                <option value="profile" ${context.auth?.inheritFromProfile !== false && context.auth?.inheritFromEnvironment === false && context.auth?.inheritFromCollection === false ? 'selected' : ''}>Inherit from Profile only</option>
+                <option value="none" ${context.auth?.inheritFromProfile === false && context.auth?.inheritFromEnvironment === false && context.auth?.inheritFromCollection === false ? 'selected' : ''}>No Inheritance (Manual Override)</option>
               </select>
               <span class="help-hint">When set to No Inheritance, the credentials configured below will be sent with this request.</span>
             </div>
 
-            ${renderAuthFieldsHtml(context.auth?.auth, 'this request', availableTokens)}
+            <div id="request-auth-fields-wrapper" style="${context.auth?.inheritFromProfile === false && context.auth?.inheritFromEnvironment === false && context.auth?.inheritFromCollection === false ? '' : 'opacity: 0.65;'}">
+              ${renderAuthFieldsHtml(context.auth?.auth, 'this request', availableTokens)}
+            </div>
           </div>
         </div>
 
@@ -4012,11 +4024,25 @@ export function getRequestPanelHtml(
     // Helper to get auth settings
     function getAuthSettings() {
       const inheritVal = document.getElementById('auth-inheritance').value;
+      const isManual = inheritVal === 'none';
+      const inheritAll = inheritVal === 'both' || inheritVal === 'all';
       return {
-        inheritFromProfile: inheritVal === 'both' || inheritVal === 'profile',
-        inheritFromEnvironment: inheritVal === 'both' || inheritVal === 'environment',
-        auth: extractAuthValues()
+        inheritFromProfile: !isManual && (inheritAll || inheritVal === 'profile'),
+        inheritFromEnvironment: !isManual && (inheritAll || inheritVal === 'environment'),
+        inheritFromCollection: !isManual && (inheritAll || inheritVal === 'collection'),
+        inheritFromFolder: !isManual && (inheritAll || inheritVal === 'collection'),
+        auth: isManual ? extractAuthValues() : { type: 'none' }
       };
+    }
+
+    const authInhSelect = document.getElementById('auth-inheritance');
+    const reqAuthWrapper = document.getElementById('request-auth-fields-wrapper');
+    if (authInhSelect && reqAuthWrapper) {
+      authInhSelect.addEventListener('change', () => {
+        const isNone = authInhSelect.value === 'none';
+        reqAuthWrapper.style.opacity = isNone ? '1' : '0.65';
+        checkDirtyState();
+      });
     }
 
     // Helper to assemble payload
@@ -4052,8 +4078,28 @@ export function getRequestPanelHtml(
       };
     }
 
-    // Send action
-    document.getElementById('btn-send').addEventListener('click', () => {
+    // Send / Cancel action
+    let isRequestInFlight = false;
+    const btnSend = document.getElementById('btn-send');
+
+    btnSend.addEventListener('click', () => {
+      if (isRequestInFlight) {
+        vscode.postMessage({ type: 'cancelRequest' });
+        const statusPill = document.getElementById('resp-status');
+        if (statusPill) {
+          statusPill.textContent = 'Cancelling...';
+          statusPill.className = 'pill';
+        }
+        btnSend.textContent = 'Send';
+        btnSend.classList.remove('btn-cancel-req');
+        isRequestInFlight = false;
+        return;
+      }
+
+      isRequestInFlight = true;
+      btnSend.textContent = 'Cancel';
+      btnSend.classList.add('btn-cancel-req');
+
       const statusPill = document.getElementById('resp-status');
       statusPill.className = 'pill';
       statusPill.textContent = 'Sending...';
@@ -4760,6 +4806,12 @@ export function getRequestPanelHtml(
       if (!msg) return;
 
       if (msg.type === 'requestResult') {
+        isRequestInFlight = false;
+        if (btnSend) {
+          btnSend.textContent = 'Send';
+          btnSend.classList.remove('btn-cancel-req');
+        }
+
         const meta = msg.meta;
         const statusPill = document.getElementById('resp-status');
         const timeTag = document.getElementById('resp-time');
@@ -5015,6 +5067,23 @@ export function getRequestPanelHtml(
         if (msg.preview && msg.preview.availableVariables) {
           currentResolvedVars = msg.preview.availableVariables;
           refreshAllVariableHighlights();
+        }
+      }
+
+      if (msg.type === 'requestCancelled') {
+        isRequestInFlight = false;
+        if (btnSend) {
+          btnSend.textContent = 'Send';
+          btnSend.classList.remove('btn-cancel-req');
+        }
+        const statusPill = document.getElementById('resp-status');
+        if (statusPill && (statusPill.textContent === 'Sending...' || statusPill.textContent === 'Cancelling...')) {
+          statusPill.textContent = 'Cancelled';
+          statusPill.className = 'pill status-err';
+        }
+        const bodyPre = document.getElementById('resp-body-text');
+        if (bodyPre && bodyPre.textContent === 'Dispatching request...') {
+          bodyPre.textContent = 'Request was cancelled before completing.';
         }
       }
 
@@ -5317,6 +5386,13 @@ export function getRequestPanelHtml(
 
     // Intercept Ctrl+S, Ctrl+Z, and Ctrl+Y in capture phase
     window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && isRequestInFlight) {
+        e.preventDefault();
+        e.stopPropagation();
+        btnSend.click();
+        return;
+      }
+
       const isS = e.key === 's' || e.key === 'S';
       if ((e.ctrlKey || e.metaKey) && isS) {
         e.preventDefault();

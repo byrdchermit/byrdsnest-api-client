@@ -27,6 +27,7 @@ export class BlueByrdPanel {
   private disposables: vscode.Disposable[] = [];
   private baseTitle: string = 'New Request';
   private isDirty: boolean = false;
+  private activeAbortController?: AbortController;
 
   public static createOrShow(
     extensionUri: vscode.Uri,
@@ -240,6 +241,10 @@ export class BlueByrdPanel {
     // Listen for disposal
     this.panel.onDidDispose(
       () => {
+        if (this.activeAbortController) {
+          try { this.activeAbortController.abort(); } catch (_) {}
+          this.activeAbortController = undefined;
+        }
         if (BlueByrdPanel.currentPanel === this) {
           BlueByrdPanel.currentPanel = undefined;
         }
@@ -260,6 +265,12 @@ export class BlueByrdPanel {
           if (message.type === 'dirtyStateChanged') {
             this.isDirty = !!message.isDirty;
             this.updatePanelTitle();
+          } else if (message.type === 'cancelRequest') {
+            if (this.activeAbortController) {
+              try { this.activeAbortController.abort(); } catch (_) {}
+              this.activeAbortController = undefined;
+            }
+            this.panel.webview.postMessage({ type: 'requestCancelled' });
           } else if (message.type === 'sendRequest') {
             const payload = message.payload;
 
@@ -279,12 +290,14 @@ export class BlueByrdPanel {
                   });
                   if (!typed || typed.trim().toUpperCase() !== kw.toUpperCase()) {
                     vscode.window.showWarningMessage(`Request cancelled. Confirmation keyword did not match.`);
+                    this.panel.webview.postMessage({ type: 'requestCancelled' });
                     return;
                   }
                 } else {
                   vscode.window.showErrorMessage(
                     `⛔ Request Blocked: HTTP ${method} requests are blocked by Safety Guards on profile "${profile.name}".`
                   );
+                  this.panel.webview.postMessage({ type: 'requestCancelled' });
                   return;
                 }
               } else if (profile.guards.warnBeforeSend) {
@@ -297,15 +310,30 @@ export class BlueByrdPanel {
                   'Cancel'
                 );
                 if (choice !== 'Send Request') {
+                  this.panel.webview.postMessage({ type: 'requestCancelled' });
                   return;
                 }
               }
             }
 
-            const meta = await this.httpService.executeRequest(payload);
-            this.panel.webview.postMessage({ type: 'requestResult', meta });
-            // Refresh explorer so history node updates
-            vscode.commands.executeCommand('byrdsnestApiClient.refreshExplorer');
+            if (this.activeAbortController) {
+              try { this.activeAbortController.abort(); } catch (_) {}
+            }
+            const abortController = new AbortController();
+            this.activeAbortController = abortController;
+
+            try {
+              const meta = await this.httpService.executeRequest(payload, abortController.signal);
+              this.panel.webview.postMessage({ type: 'requestResult', meta });
+              // Refresh explorer so history node updates
+              vscode.commands.executeCommand('byrdsnestApiClient.refreshExplorer');
+            } catch (err) {
+              this.panel.webview.postMessage({ type: 'requestCancelled' });
+            } finally {
+              if (this.activeAbortController === abortController) {
+                this.activeAbortController = undefined;
+              }
+            }
           } else if (message.type === 'saveRequest') {
             const payload = message.payload;
             const savedItem: RequestItem = {

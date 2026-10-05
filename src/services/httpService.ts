@@ -46,7 +46,7 @@ export class HttpService {
     variables?: VariableItem[];
     preRequestScript?: string;
     postResponseScript?: string;
-  }): Promise<ResponseMetadata> {
+  }, cancellationSignal?: AbortSignal): Promise<ResponseMetadata> {
     let method = (params.method || 'GET').toUpperCase();
     let rawUrl = params.url || '';
     let incomingHeaders: Record<string, string> = { ...(params.headers || {}) };
@@ -180,10 +180,29 @@ export class HttpService {
       if (k) requestHeaders.set(k, v);
     });
 
-    // Timeout guard (30 seconds)
+    // Timeout guard (30 seconds) & mid-flight cancellation
     const controller = new AbortController();
+    let isUserCancelled = false;
+
+    const onCancel = () => {
+      isUserCancelled = true;
+      try {
+        controller.abort(new Error('Request cancelled by user.'));
+      } catch (_) {}
+    };
+
+    if (cancellationSignal) {
+      if (cancellationSignal.aborted) {
+        onCancel();
+      } else {
+        cancellationSignal.addEventListener('abort', onCancel);
+      }
+    }
+
     const timeoutId = setTimeout(() => {
-      controller.abort(new Error('Request timed out after 30 seconds.'));
+      try {
+        controller.abort(new Error('Request timed out after 30 seconds.'));
+      } catch (_) {}
     }, 30000);
 
     const init: RequestInit = {
@@ -372,8 +391,18 @@ export class HttpService {
       // Live notification to open History Inspector
       BlueByrdHistoryPanel.notifyNewHistory(recorded);
 
+      clearTimeout(timeoutId);
+      if (cancellationSignal) {
+        try { cancellationSignal.removeEventListener('abort', onCancel); } catch (_) {}
+      }
+
       return metadata;
     } catch (err) {
+      clearTimeout(timeoutId);
+      if (cancellationSignal) {
+        try { cancellationSignal.removeEventListener('abort', onCancel); } catch (_) {}
+      }
+
       const elapsedMs = Math.round(performance.now() - startTime);
 
       // Extract the real OS-level error from Node's fetch wrapper.
@@ -416,12 +445,19 @@ export class HttpService {
           `  • DNS not available\n` +
           `  • baseUrl contains a hostname instead of an IP\n\n` +
           `Error: ENOTFOUND`;
-      } else if (err instanceof Error && err.name === 'AbortError') {
-        errorLabel = 'Request Timed Out';
-        diagnostic =
-          `Request aborted after 30 seconds.\n\n` +
-          `The server did not respond within the timeout window.\n` +
-          `Check that the host is reachable and the endpoint is responding.`;
+      } else if (isUserCancelled || cancellationSignal?.aborted || controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        if (isUserCancelled || cancellationSignal?.aborted) {
+          errorLabel = 'Cancelled';
+          diagnostic =
+            `Request cancelled by user mid-flight.\n\n` +
+            `The request was aborted before completing.`;
+        } else {
+          errorLabel = 'Request Timed Out';
+          diagnostic =
+            `Request aborted after 30 seconds.\n\n` +
+            `The server did not respond within the timeout window.\n` +
+            `Check that the host is reachable and the endpoint is responding.`;
+        }
       } else if (causeCode) {
         errorLabel = causeCode;
         diagnostic = `${surfaceMsg}\n\nUnderlying error: ${causeCode} — ${causeMsg}`;
