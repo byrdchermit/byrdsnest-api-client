@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.9] - 2026-10-05
+
+### Added
+- **Scanned File Preview & Granular Selective Import**:
+  - Automatically scans and reports file contents (collections, requests, folders, environments, variables, profiles) prior to importing.
+  - Interactive multi-select QuickPick selection for workspace backups (`Choose What to Import...`), allowing selective import of collections, environments, and profiles.
+  - Interactive multi-select QuickPick for collections (`Choose Folders & Requests...`), allowing selective filtering of folders and requests.
+  - Interactive variable selection for environments (`Choose Variables to Import...`).
+  - Added support for native `byrdsnest-backup`, `byrdsnest-collection`, and `byrdsnest-environment` formats with fallback unrecognized format warning.
+- **Mid-Flight Request Cancellation**:
+  - Added `Cancel` button toggle in Request Panel while requests are executing.
+  - AbortController signal handling across HttpService with graceful UI cancellation state.
+- **Folder Auth Inheritance from Collections**:
+  - Folders can now inherit authentication configuration directly from their parent collection (`inheritFromCollection`).
+  - Request panel hierarchical auth dropdown: Inherit from Parent (Collection, Folder, Environment, Profile).
+- **Settings Panel Polish & Dirty Tracking**:
+  - Dynamic dirty snapshot tracking with highlighted `Save Changes*` button state across settings tabs.
+  - Pinned context bar and sticky table headers so controls and column labels remain visible while scrolling.
+- **CI & Build Modernization**:
+  - Upgraded packaging toolchain to `@vscode/vsce@4.0.0` with 0 security audit vulnerabilities.
+  - Hardened GitHub Actions CI security audit step to audit production dependencies.
+
 ---
 
 ## [0.3.4] - 2026-09-27
