@@ -2,7 +2,7 @@
   "name": "byrdsnest-api-client",
   "displayName": "byrdsnest api client",
   "description": "A native, local-first API client for VS Code with hierarchical inheritance, unified auth, and universal JSON import/export (Public Beta).",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "publisher": "byrdchermit",
   "icon": "media/icon.png",
   "repository": {

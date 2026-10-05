@@ -4031,7 +4031,114 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     console.log('✓ bn Namespace & Prefix-Free Direct Globals (test, expect, response, request, environment) verified');
   }
 
-  console.log('\nAll 61 verification test suites passed successfully! 🎉');
+  // 62. Tabular Response View, Array Object Count & Drilling, CSV & Multi-Sheet XLSX Export
+  {
+    const { ExportService } = require('../dist/services/exportService');
+    const { getRequestPanelHtml } = require('../dist/views/panels/requestPanelHtml');
+
+    // 1. ExportService XML Escaping & Column Naming
+    assert.strictEqual(ExportService.escapeXml('Hello <World> & "Friends"'), 'Hello &lt;World&gt; &amp; &quot;Friends&quot;');
+    assert.strictEqual(ExportService.colName(0), 'A');
+    assert.strictEqual(ExportService.colName(25), 'Z');
+    assert.strictEqual(ExportService.colName(26), 'AA');
+    assert.strictEqual(ExportService.colName(27), 'AB');
+
+    // 2. Sheet name sanitization
+    const existing = new Set();
+    const s1 = ExportService.sanitizeSheetName('Invalid/Sheet[1]*', existing);
+    assert.strictEqual(s1, 'Invalid_Sheet_1__');
+    const s2 = ExportService.sanitizeSheetName('Invalid/Sheet[1]*', existing);
+    assert.strictEqual(s2, 'Invalid_Sheet_1___2');
+
+    // 3. RFC 4180 CSV Export
+    const testData = [
+      { id: 1, name: 'Alice', bio: 'Software "Lead" Engineer', tags: ['api', 'client'] },
+      { id: 2, name: 'Bob', bio: 'Designer, UX', tags: ['ui'] }
+    ];
+    const csv = ExportService.jsonToCsv(testData);
+    assert(csv.includes('id,name,bio,tags'), 'CSV header row present');
+    assert(csv.includes('1,Alice,"Software ""Lead"" Engineer"'), 'CSV quotes properly escaped');
+    assert(csv.includes('2,Bob,"Designer, UX"'), 'CSV comma field quoted');
+
+    // 4. Multi-sheet array discovery for XLSX
+    const nestedData = [
+      {
+        id: 'usr_1',
+        name: 'Alice',
+        orders: [
+          { orderId: 'ord_101', total: 49.99, items: [{ sku: 'SKU-A', qty: 2 }] },
+          { orderId: 'ord_102', total: 19.50, items: [{ sku: 'SKU-B', qty: 1 }] }
+        ],
+        roles: ['admin', 'billing']
+      },
+      {
+        id: 'usr_2',
+        name: 'Bob',
+        orders: [
+          { orderId: 'ord_103', total: 105.00, items: [{ sku: 'SKU-C', qty: 5 }] }
+        ],
+        roles: ['user']
+      }
+    ];
+
+    const sheets = ExportService.jsonToWorkbookSheets(nestedData, 'Users');
+    const sheetNames = sheets.map(s => s.name);
+    assert(sheetNames.includes('Users'), 'Primary Users sheet present');
+    assert(sheetNames.includes('orders'), 'Dedicated orders tab present');
+    assert(sheetNames.includes('roles'), 'Dedicated roles tab present');
+    assert(sheetNames.includes('orders_items'), 'Dedicated nested orders_items tab present');
+
+    // Check parent sheet array cell label
+    const usersSheet = sheets.find(s => s.name === 'Users');
+    assert.strictEqual(usersSheet.rows[0][2], '[2 items]', 'Parent row shows [2 items]');
+
+    // Check child orders sheet has parent linkage
+    const ordersSheet = sheets.find(s => s.name === 'orders');
+    assert(ordersSheet.headers.includes('_parent_index'), 'orders sheet has _parent_index');
+    assert(ordersSheet.headers.includes('_parent_id'), 'orders sheet has _parent_id');
+    assert.strictEqual(ordersSheet.rows.length, 3, 'orders sheet has 3 rows');
+    assert.strictEqual(ordersSheet.rows[0][0], 1, 'First order belongs to parent 1');
+    assert.strictEqual(ordersSheet.rows[0][1], 'usr_1', 'Parent id is usr_1');
+
+    // 5. Zero-dependency XLSX Buffer generation & ZIP signature
+    const xlsxBuffer = ExportService.generateXlsx(sheets);
+    assert(Buffer.isBuffer(xlsxBuffer), 'XLSX must be a Buffer');
+    assert(xlsxBuffer.length > 500, 'XLSX buffer must contain substantial OPC package');
+    assert.strictEqual(xlsxBuffer.readUInt32LE(0), 0x04034b50, 'Must begin with PK local header signature');
+
+    // 6. UI Rendering in requestPanelHtml
+    const mockState = new BlueByrdStateManager(mockContext).getState();
+    const mockReq = (mockState.collections[0]?.requests && mockState.collections[0].requests[0]) ||
+                    (mockState.collections[0]?.folders && mockState.collections[0].folders[0]?.requests[0]) ||
+                    { id: 'req-1', name: 'Test Request', method: 'GET', url: 'https://api.example.com', headers: {} };
+    const html = getRequestPanelHtml(mockReq, mockState);
+
+    // Verify Tabular mode toggle button
+    assert(html.includes('id="btn-table-resp"'), 'Must include Table toggle button #btn-table-resp');
+    assert(html.includes('⊞ Table'), 'Table toggle button must have label');
+
+    // Verify Tabular container and toolbar
+    assert(html.includes('id="resp-table-view"'), 'Must include #resp-table-view container');
+    assert(html.includes('id="table-breadcrumbs"'), 'Must include #table-breadcrumbs');
+    assert(html.includes('id="btn-table-back"'), 'Must include #btn-table-back');
+    assert(html.includes('id="table-filter-input"'), 'Must include #table-filter-input');
+    assert(html.includes('id="btn-table-orientation"'), 'Must include #btn-table-orientation');
+    assert(html.includes('id="btn-table-export-csv"'), 'Must include #btn-table-export-csv');
+    assert(html.includes('id="btn-table-export-xlsx"'), 'Must include #btn-table-export-xlsx');
+    assert(html.includes('id="resp-tabular-table"'), 'Must include #resp-tabular-table');
+
+    // Verify Tabular View Engine scripts
+    assert(html.includes("tableOrientation = 'horizontal'"), 'Must default to horizontal mode');
+    assert(html.includes('table-array-badge'), 'Must include table-array-badge class');
+    assert(html.includes('renderTableCell'), 'Must include renderTableCell function');
+    assert(html.includes('renderTableView'), 'Must include renderTableView function');
+    assert(html.includes("type: 'exportCsv'"), 'Must dispatch exportCsv message');
+    assert(html.includes("type: 'exportXlsx'"), 'Must dispatch exportXlsx message');
+
+    console.log('✓ Tabular Response View, Array Object Count & Drilling, CSV & Multi-Sheet XLSX Export verified');
+  }
+
+  console.log('\nAll 62 verification test suites passed successfully! 🎉');
   process.exit(0);
 })().catch(err => {
   console.error('Async test suite failure:', err);

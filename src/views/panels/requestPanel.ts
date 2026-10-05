@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { AppState, EnvironmentConfig, Profile, RequestContext, RequestItem, StoredToken } from '../../types';
 import { BlueByrdStateManager } from '../../state/stateManager';
 import { HttpService } from '../../services/httpService';
 import { VariableService } from '../../services/variableService';
 import { AuthService } from '../../services/authService';
 import { TokenService } from '../../services/tokenService';
+import { ExportService } from '../../services/exportService';
 import { getRequestPanelHtml } from './requestPanelHtml';
 
 export class BlueByrdPanel {
@@ -570,6 +573,53 @@ export class BlueByrdPanel {
                 tokens,
                 selectedId: newToken.id,
               });
+            }
+          } else if (message.type === 'exportCsv') {
+            const payload = message.payload || {};
+            const rawTitle = payload.filename || this.baseTitle || 'response';
+            const cleanTitle = rawTitle.replace(/[\\/:*?"<>|]/g, '_').trim() || 'response';
+            const defaultFileName = cleanTitle.endsWith('.csv') ? cleanTitle : `${cleanTitle}.csv`;
+
+            const saveUri = await vscode.window.showSaveDialog({
+              defaultUri: vscode.Uri.file(defaultFileName),
+              filters: { 'CSV (Comma Delimited)': ['csv'], 'All Files': ['*'] },
+              saveLabel: 'Export CSV',
+            });
+
+            if (saveUri) {
+              const csvContent = ExportService.jsonToCsv(payload.data);
+              await fs.promises.writeFile(saveUri.fsPath, csvContent, 'utf8');
+              const choice = await vscode.window.showInformationMessage(
+                `CSV exported: ${path.basename(saveUri.fsPath)}`,
+                'Open File'
+              );
+              if (choice === 'Open File') {
+                vscode.env.openExternal(saveUri);
+              }
+            }
+          } else if (message.type === 'exportXlsx') {
+            const payload = message.payload || {};
+            const rawTitle = payload.filename || this.baseTitle || 'response';
+            const cleanTitle = rawTitle.replace(/[\\/:*?"<>|]/g, '_').trim() || 'response';
+            const defaultFileName = cleanTitle.endsWith('.xlsx') ? cleanTitle : `${cleanTitle}.xlsx`;
+
+            const saveUri = await vscode.window.showSaveDialog({
+              defaultUri: vscode.Uri.file(defaultFileName),
+              filters: { 'Excel Workbook (*.xlsx)': ['xlsx'], 'All Files': ['*'] },
+              saveLabel: 'Export Excel Workbook',
+            });
+
+            if (saveUri) {
+              const sheets = ExportService.jsonToWorkbookSheets(payload.data, cleanTitle);
+              const xlsxBuffer = ExportService.generateXlsx(sheets);
+              await fs.promises.writeFile(saveUri.fsPath, xlsxBuffer);
+              const choice = await vscode.window.showInformationMessage(
+                `Excel workbook exported: ${path.basename(saveUri.fsPath)} (${sheets.length} ${sheets.length === 1 ? 'tab' : 'tabs'})`,
+                'Open File'
+              );
+              if (choice === 'Open File') {
+                vscode.env.openExternal(saveUri);
+              }
             }
           }
         } catch (err) {
