@@ -1304,7 +1304,12 @@ export class CommandManager {
           const content = await fs.promises.readFile(filePath, 'utf8');
           const result = ImportExportService.parse(content);
 
-          if (result.type === 'postman-collection' || result.type === 'openapi' || result.type === 'bluebyrd-collection') {
+          if (
+            result.type === 'postman-collection' ||
+            result.type === 'openapi' ||
+            result.type === 'bluebyrd-collection' ||
+            result.type === 'byrdsnest-collection'
+          ) {
             this.stateManager.saveCollection(result.collection);
             this.treeProvider.refresh();
             const directReqs = result.collection.requests.length;
@@ -1313,14 +1318,18 @@ export class CommandManager {
             vscode.window.showInformationMessage(
               `Imported collection '${result.collection.name}' (${totalReqs} request${totalReqs === 1 ? '' : 's'}, ${result.collection.folders.length} folder${result.collection.folders.length === 1 ? '' : 's'}).`
             );
-          } else if (result.type === 'postman-environment' || result.type === 'bluebyrd-environment') {
+          } else if (
+            result.type === 'postman-environment' ||
+            result.type === 'bluebyrd-environment' ||
+            result.type === 'byrdsnest-environment'
+          ) {
             this.stateManager.saveEnvironment(result.environmentName, result.environment);
             this.treeProvider.refresh();
             const varCount = Object.keys(result.environment.variables || {}).length;
             vscode.window.showInformationMessage(
               `Imported environment '${result.environmentName}' (${varCount} variable${varCount === 1 ? '' : 's'}).`
             );
-          } else if (result.type === 'bluebyrd-backup') {
+          } else if (result.type === 'bluebyrd-backup' || result.type === 'byrdsnest-backup') {
             const choice = await vscode.window.showWarningMessage(
               'How would you like to restore this workspace backup?',
               { modal: true },
@@ -1375,6 +1384,8 @@ export class CommandManager {
                 `Workspace merged with backup: imported ${result.state.collections.length} collections (${totalReqs} requests), ${Object.keys(result.state.environments).length} environments.`
               );
             }
+          } else {
+            vscode.window.showWarningMessage(`Unrecognized import format for '${path.basename(filePath)}'.`);
           }
         } catch (err: any) {
           vscode.window.showErrorMessage(`Import failed: ${err?.message || 'Unknown error'}`);
@@ -1529,7 +1540,7 @@ export class CommandManager {
 
           const exportJson = ImportExportService.exportEnvironment(envName, env);
           const slug = envName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'environment';
-          const defaultUri = vscode.Uri.file(`${slug}.bluebyrd-environment.json`);
+          const defaultUri = vscode.Uri.file(`${slug}.byrdsnest-environment.json`);
 
           const targetUri = await vscode.window.showSaveDialog({
             defaultUri,

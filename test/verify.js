@@ -4362,7 +4362,121 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     console.log('✓ Mid-Flight Request Cancellation & Folder Auth Inheritance + Dirty Tracking verified');
   }
 
-  console.log('\nAll 65 verification test suites passed successfully! 🎉');
+  // 66. Test byrdsnest-backup, byrdsnest-collection, and byrdsnest-environment Import Parsing & Command Dispatch
+  {
+    const fs = require('fs');
+
+    // 1. Verify byrdsnest-backup format detection & parsing
+    const sampleByrdsnestBackup = JSON.stringify({
+      byrdsnestBackupVersion: 1,
+      exportedAt: new Date().toISOString(),
+      profile: {
+        id: 'profile-bn-test',
+        name: 'Byrdsnest Test Profile',
+        auth: { type: 'bearer', token: 'profile-tok' },
+        variables: { profKey: 'profVal' }
+      },
+      environments: [
+        {
+          id: 'env-bn-1',
+          name: 'BN Stage',
+          baseUrl: 'https://stage.example.com',
+          variables: { apiHost: 'stage.example.com' }
+        }
+      ],
+      collections: [
+        {
+          id: 'col-bn-1',
+          name: 'BN API Collection',
+          folders: [
+            {
+              id: 'fold-1',
+              name: 'Auth Endpoints',
+              requests: [
+                {
+                  id: 'req-1',
+                  name: 'Get Token',
+                  method: 'POST',
+                  url: 'https://stage.example.com/oauth/token',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: '{}',
+                  bodyType: 'json'
+                }
+              ]
+            }
+          ],
+          requests: []
+        }
+      ]
+    });
+
+    const parsedBackup = ImportExportService.parse(sampleByrdsnestBackup);
+    assert.strictEqual(parsedBackup.type, 'byrdsnest-backup', 'Should detect byrdsnest-backup type');
+    assert.strictEqual(parsedBackup.state.collections.length, 1, 'Should have 1 collection');
+    assert.strictEqual(parsedBackup.state.collections[0].name, 'BN API Collection');
+    assert.strictEqual(parsedBackup.state.collections[0].folders.length, 1);
+    assert.strictEqual(parsedBackup.state.collections[0].folders[0].requests.length, 1);
+    assert(parsedBackup.state.environments['BN Stage'], 'Should have BN Stage environment');
+    assert.strictEqual(parsedBackup.state.profiles.length, 1, 'Should have 1 profile');
+    assert.strictEqual(parsedBackup.state.profiles[0].name, 'Byrdsnest Test Profile');
+
+    // 2. Verify byrdsnest-collection format detection & parsing
+    const sampleByrdsnestCol = JSON.stringify({
+      kind: 'byrdsnest.collection',
+      version: 1,
+      name: 'Single Byrdsnest Col',
+      folders: [],
+      requests: [
+        {
+          id: 'req-single',
+          name: 'Direct Request',
+          method: 'GET',
+          url: 'https://api.example.com/items'
+        }
+      ]
+    });
+    const parsedCol = ImportExportService.parse(sampleByrdsnestCol);
+    assert.strictEqual(parsedCol.type, 'byrdsnest-collection', 'Should detect byrdsnest-collection type');
+    assert.strictEqual(parsedCol.collection.name, 'Single Byrdsnest Col');
+    assert.strictEqual(parsedCol.collection.requests.length, 1);
+
+    // 3. Verify byrdsnest-environment format detection & parsing
+    const sampleByrdsnestEnv = JSON.stringify({
+      kind: 'byrdsnest.environment',
+      version: 1,
+      name: 'Single Byrdsnest Env',
+      baseUrl: 'https://bn.example.com',
+      variables: { testVar: 'hello' }
+    });
+    const parsedEnv = ImportExportService.parse(sampleByrdsnestEnv);
+    assert.strictEqual(parsedEnv.type, 'byrdsnest-environment', 'Should detect byrdsnest-environment type');
+    assert.strictEqual(parsedEnv.environmentName, 'Single Byrdsnest Env');
+    assert.strictEqual(parsedEnv.environment.baseUrl, 'https://bn.example.com');
+    assert.strictEqual(parsedEnv.environment.variables.testVar, 'hello');
+
+    // 4. Verify actual user export file if present on disk
+    const userExportPath = 'C:\\Users\\chase-developer\\Downloads\\mawm_collection_export_CB_2609111231.json';
+    if (fs.existsSync(userExportPath)) {
+      const userFileContent = fs.readFileSync(userExportPath, 'utf8');
+      const parsedUserFile = ImportExportService.parse(userFileContent);
+      assert.strictEqual(parsedUserFile.type, 'byrdsnest-backup', 'User export file must be detected as byrdsnest-backup');
+      assert.strictEqual(parsedUserFile.state.collections.length, 5, 'User export file should contain 5 collections');
+      assert.strictEqual(Object.keys(parsedUserFile.state.environments).length, 10, 'User export file should contain 10 environments');
+      assert.strictEqual(parsedUserFile.state.profiles.length, 1, 'User export file should contain 1 profile');
+      assert.strictEqual(parsedUserFile.state.profiles[0].name, 'MAWM_EXPORT_VSIX', 'User profile should be MAWM_EXPORT_VSIX');
+    }
+
+    // 5. Verify commandManager dispatch logic checks byrdsnest types
+    const cmdManagerSrc = fs.readFileSync(path.join(__dirname, '../src/commands/commandManager.ts'), 'utf8');
+    assert(cmdManagerSrc.includes("result.type === 'byrdsnest-collection'"), 'commandManager must check byrdsnest-collection');
+    assert(cmdManagerSrc.includes("result.type === 'byrdsnest-environment'"), 'commandManager must check byrdsnest-environment');
+    assert(cmdManagerSrc.includes("result.type === 'byrdsnest-backup'"), 'commandManager must check byrdsnest-backup');
+    assert(cmdManagerSrc.includes('Unrecognized import format'), 'commandManager must have fallback warning message');
+
+    console.log('✓ byrdsnest-backup, byrdsnest-collection & byrdsnest-environment Import Parsing & Command Dispatch verified');
+  }
+
+  console.log('\nAll 66 verification test suites passed successfully! 🎉');
   process.exit(0);
 })().catch(err => {
   console.error('Async test suite failure:', err);
