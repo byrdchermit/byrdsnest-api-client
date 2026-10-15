@@ -1393,22 +1393,45 @@ export function getRequestPanelHtml(
     .pill {
       display: inline-flex;
       align-items: center;
-      padding: 2px 8px;
+      padding: 3px 9px;
       border-radius: 12px;
       font-size: 11px;
       font-weight: 700;
-      color: #ffffff;
-      background: #555555;
+      color: #ffffff !important;
+      background: #444c56;
+      border: 1px solid transparent;
+      letter-spacing: 0.2px;
     }
-    .pill.status-2xx { background: #238636; }
-    .pill.status-3xx { background: #1f6feb; }
-    .pill.status-4xx { background: #d29922; }
-    .pill.status-5xx { background: #da3633; }
-    .pill.status-err { background: #da3633; }
+    .pill.status-2xx {
+      background: #238636 !important;
+      color: #ffffff !important;
+      border-color: #2ea043;
+    }
+    .pill.status-3xx {
+      background: #1f6feb !important;
+      color: #ffffff !important;
+      border-color: #388bfd;
+    }
+    .pill.status-4xx {
+      background: #b05a00 !important;
+      color: #ffffff !important;
+      border-color: #d29922;
+    }
+    .pill.status-5xx {
+      background: #da3633 !important;
+      color: #ffffff !important;
+      border-color: #f85149;
+    }
+    .pill.status-err {
+      background: #da3633 !important;
+      color: #ffffff !important;
+      border-color: #f85149;
+    }
 
     .meta-tag {
       font-size: 11px;
-      color: var(--muted);
+      color: var(--vscode-descriptionForeground, #a0a0a0);
+      font-weight: 500;
     }
 
     .response-actions {
@@ -2539,11 +2562,11 @@ export function getRequestPanelHtml(
       padding: 1px 7px;
       border-radius: 3px;
     }
-    .status-2xx { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
-    .status-3xx { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
-    .status-4xx { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
-    .status-5xx { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
-    .status-default { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+    .openapi-status-badge.status-2xx { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+    .openapi-status-badge.status-3xx { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .openapi-status-badge.status-4xx { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+    .openapi-status-badge.status-5xx { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+    .openapi-status-badge.status-default { background: rgba(255, 255, 255, 0.1); color: var(--text); }
     .openapi-resp-desc {
       font-size: 12px;
       color: var(--text);
