@@ -329,13 +329,13 @@ export class BlueByrdCollectionsTreeProvider
     folderId?: string,
     folderName?: string
   ): BlueByrdTreeItem {
-    const activeProfile = this.state.activeProfileId && this.state.activeProfileId !== 'all'
-      ? this.stateManager.getProfile(this.state.activeProfileId)
-      : this.state.profiles[0];
-    const activeEnv = this.state.activeEnvironmentName || Object.keys(this.state.environments)[0] || 'Local';
+    const activeEnv = this.state.activeEnvironmentName !== undefined
+      ? this.state.activeEnvironmentName
+      : (req.environment !== undefined ? req.environment : '');
 
     const reqContext: RequestContext = {
       id: req.id,
+      requestId: req.id,
       requestName: req.name,
       method: req.method,
       url: req.url,
@@ -343,11 +343,18 @@ export class BlueByrdCollectionsTreeProvider
       collectionId: collectionId,
       folder: folderName || req.folder,
       folderId: folderId || req.folderId,
-      profile: activeProfile?.name || this.state.profiles[0]?.name,
       environment: activeEnv,
       headers: req.headers,
       body: req.body,
+      bodyType: req.bodyType,
+      bodyFormData: req.bodyFormData,
       auth: req.auth,
+      notes: req.notes,
+      variables: req.variables,
+      preRequestScript: req.preRequestScript,
+      postResponseScript: req.postResponseScript,
+      baseUrlPreference: req.baseUrlPreference,
+      openApiDocs: req.openApiDocs,
     };
 
     const reqItem = new BlueByrdTreeItem(

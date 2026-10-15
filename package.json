@@ -2,7 +2,7 @@
   "name": "byrdsnest-api-client",
   "displayName": "byrdsnest api client",
   "description": "A native, local-first API client for VS Code with hierarchical inheritance, unified auth, and universal JSON import/export (Public Beta).",
-  "version": "0.3.9",
+  "version": "0.4.0",
   "publisher": "byrdchermit",
   "icon": "media/icon.png",
   "repository": {
@@ -142,7 +142,7 @@
         "command": "byrdsnestApiClient.createCollection",
         "category": "byrdsnest api client",
         "title": "New Collection",
-        "icon": "$(new-folder)"
+        "icon": "$(repo)"
       },
       {
         "command": "byrdsnestApiClient.createFolder",
@@ -344,19 +344,24 @@
           "group": "navigation@1"
         },
         {
-          "command": "byrdsnestApiClient.createCollection",
+          "command": "byrdsnestApiClient.createFolder",
           "when": "(view == byrdsnestCollections || view == blueByrdCollections)",
           "group": "navigation@2"
         },
         {
-          "command": "byrdsnestApiClient.importJson",
+          "command": "byrdsnestApiClient.createCollection",
           "when": "(view == byrdsnestCollections || view == blueByrdCollections)",
           "group": "navigation@3"
         },
         {
-          "command": "byrdsnestApiClient.refreshExplorer",
+          "command": "byrdsnestApiClient.importJson",
           "when": "(view == byrdsnestCollections || view == blueByrdCollections)",
           "group": "navigation@4"
+        },
+        {
+          "command": "byrdsnestApiClient.refreshExplorer",
+          "when": "(view == byrdsnestCollections || view == blueByrdCollections)",
+          "group": "navigation@5"
         },
         {
           "command": "byrdsnestApiClient.createEnvironment",
@@ -502,7 +507,12 @@
         },
         {
           "command": "byrdsnestApiClient.createFolder",
-          "when": "(view == byrdsnestCollections || view == blueByrdCollections) && (viewItem == byrdsnest.collection || viewItem == bluebyrd.collection)",
+          "when": "(view == byrdsnestCollections || view == blueByrdCollections) && ((viewItem == byrdsnest.collection || viewItem == bluebyrd.collection) || (viewItem == byrdsnest.folder || viewItem == bluebyrd.folder))",
+          "group": "inline@2"
+        },
+        {
+          "command": "byrdsnestApiClient.createFolder",
+          "when": "(view == byrdsnestCollections || view == blueByrdCollections) && ((viewItem == byrdsnest.collection || viewItem == bluebyrd.collection) || (viewItem == byrdsnest.folder || viewItem == bluebyrd.folder))",
           "group": "2_manage@1"
         },
         {

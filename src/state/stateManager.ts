@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import {
   AppState,
   AuthSettings,
@@ -19,11 +20,25 @@ export class BlueByrdStateManager {
   private readonly context: vscode.ExtensionContext;
   private readonly storageKey = 'byrdsnest-api-state';
   private readonly legacyStorageKey = 'blue-byrd-state';
+  private readonly updatedAtKey = 'byrdsnest-api-state.updatedAt';
+  private readonly diskStoragePath?: string;
+  private cachedState?: AppState;
+  private lastDiskMtimeMs = 0;
   private readonly _onDidChangeState = new vscode.EventEmitter<AppState>();
   public readonly onDidChangeState: vscode.Event<AppState> = this._onDidChangeState.event;
 
-  constructor(context: vscode.ExtensionContext) {
+  constructor(context: vscode.ExtensionContext, customStoragePath?: string) {
     this.context = context;
+    if (customStoragePath) {
+      this.diskStoragePath = customStoragePath;
+    } else if (context && (context.globalStorageUri || context.extensionUri)) {
+      this.diskStoragePath = path.join(os.homedir(), '.byrdsnest', 'state.json');
+    }
+    try {
+      this.context?.globalState?.setKeysForSync?.([this.storageKey, this.updatedAtKey]);
+    } catch {
+      // Ignore if not supported in mock context
+    }
   }
 
   private generateId(prefix: string): string {
@@ -37,7 +52,7 @@ export class BlueByrdStateManager {
           id: 'profile-dev',
           name: 'Development',
           color: '#10b981',
-          auth: { type: 'bearer', token: 'dev-token-sample', headerName: 'Authorization' },
+          auth: { type: 'none' },
           variables: {
             authSecret: 'super-secret-key',
             version: 'v1',
@@ -47,7 +62,7 @@ export class BlueByrdStateManager {
           id: 'profile-staging',
           name: 'Staging',
           color: '#f59e0b',
-          auth: { type: 'apiKey', keyName: 'x-api-key', headerName: 'x-api-key', token: 'staging-api-key' },
+          auth: { type: 'none' },
           variables: {
             version: 'v1',
           },
@@ -56,7 +71,7 @@ export class BlueByrdStateManager {
           id: 'profile-prod',
           name: 'Production',
           color: '#ef4444',
-          auth: { type: 'bearer', token: '', headerName: 'Authorization' },
+          auth: { type: 'none' },
           variables: {
             version: 'v1',
           },
@@ -176,9 +191,18 @@ export class BlueByrdStateManager {
   }
 
   private normalizeAuth(auth?: Partial<ProfileAuth>): ProfileAuth {
+    const isLegacySampleToken =
+      (auth?.type === 'bearer' && auth?.token === 'dev-token-sample') ||
+      (auth?.type === 'apiKey' && auth?.token === 'staging-api-key');
+    const resolvedType = isLegacySampleToken
+      ? 'none'
+      : (auth?.type === 'bearer' || auth?.type === 'apiKey' || auth?.type === 'oauth2' || auth?.type === 'basic' ? auth.type : 'none');
+    const resolvedToken = isLegacySampleToken ? '' : (auth?.token ?? '');
+
     return {
-      type: auth?.type === 'bearer' || auth?.type === 'apiKey' || auth?.type === 'oauth2' || auth?.type === 'basic' ? auth.type : 'none',
-      token: auth?.token ?? '',
+      type: resolvedType,
+      token: resolvedToken,
+      selectedTokenId: auth?.selectedTokenId,
       headerName: auth?.headerName ?? (auth?.type === 'apiKey' ? (auth?.keyName ?? 'X-API-Key') : 'Authorization'),
       keyName: auth?.keyName ?? 'X-API-Key',
       headerPrefix: auth?.headerPrefix ?? (auth?.type === 'bearer' || auth?.type === 'oauth2' ? 'Bearer' : ''),
@@ -280,7 +304,10 @@ export class BlueByrdStateManager {
                       auth: r.auth,
                       notes: r.notes || '',
                       variables: r.variables || [],
+                      preRequestScript: r.preRequestScript,
+                      postResponseScript: r.postResponseScript,
                       baseUrlPreference: r.baseUrlPreference,
+                      openApiDocs: r.openApiDocs,
                     }))
                   : [];
                 return {
@@ -325,7 +352,10 @@ export class BlueByrdStateManager {
                   auth: r.auth,
                   notes: r.notes || '',
                   variables: r.variables || [],
+                  preRequestScript: r.preRequestScript,
+                  postResponseScript: r.postResponseScript,
                   baseUrlPreference: r.baseUrlPreference,
+                  openApiDocs: r.openApiDocs,
                 }))
             : [];
 
@@ -405,14 +435,179 @@ export class BlueByrdStateManager {
     };
   }
 
+  private isDefaultTemplateState(state?: Partial<AppState>): boolean {
+    if (!state || typeof state !== 'object') {
+      return true;
+    }
+    const cols = Array.isArray(state.collections) ? state.collections : [];
+    const profs = Array.isArray(state.profiles) ? state.profiles : [];
+    const envs = state.environments && typeof state.environments === 'object' ? Object.keys(state.environments) : [];
+    const hist = Array.isArray(state.history) ? state.history : [];
+
+    if (cols.length !== 1 || cols[0]?.id !== 'col-demo' || cols[0]?.name !== 'Demo Collection') {
+      return false;
+    }
+    if ((cols[0]?.requests?.length || 0) > 0) {
+      return false;
+    }
+    const folders = cols[0]?.folders || [];
+    if (folders.length !== 2 || folders[0]?.requests?.length !== 2 || folders[1]?.requests?.length !== 1) {
+      return false;
+    }
+    if (profs.length !== 3 || envs.length !== 3 || hist.length > 0) {
+      return false;
+    }
+    const globalVars = state.globalProfile?.variables ? Object.keys(state.globalProfile.variables).length : 0;
+    const globalHeaders = state.globalProfile?.headers ? Object.keys(state.globalProfile.headers).length : 0;
+    const globalAuthType = state.globalProfile?.auth?.type || 'none';
+    if (globalVars > 0 || globalHeaders > 0 || globalAuthType !== 'none') {
+      return false;
+    }
+    return true;
+  }
+
+  private readDiskState(): { state: Partial<AppState>; updatedAt: number; mtimeMs: number } | undefined {
+    if (!this.diskStoragePath) {
+      return undefined;
+    }
+    try {
+      if (!fs.existsSync(this.diskStoragePath)) {
+        return undefined;
+      }
+      const stat = fs.statSync(this.diskStoragePath);
+      const raw = fs.readFileSync(this.diskStoragePath, 'utf8');
+      if (!raw || !raw.trim()) {
+        return undefined;
+      }
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') {
+        return undefined;
+      }
+      const updatedAt = typeof parsed._updatedAt === 'number' ? parsed._updatedAt : stat.mtimeMs;
+      const state: Partial<AppState> = parsed.state && typeof parsed.state === 'object' ? parsed.state : parsed;
+      return { state, updatedAt, mtimeMs: stat.mtimeMs };
+    } catch (err) {
+      console.error('[byrdsnest api client] Failed to read disk state:', err);
+      return undefined;
+    }
+  }
+
+  private writeDiskState(state: AppState, updatedAt: number): void {
+    if (!this.diskStoragePath) {
+      return;
+    }
+    try {
+      const dir = path.dirname(this.diskStoragePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const payload = JSON.stringify({ ...state, _updatedAt: updatedAt }, null, 2);
+      const tmpPath = `${this.diskStoragePath}.tmp`;
+      fs.writeFileSync(tmpPath, payload, 'utf8');
+      fs.renameSync(tmpPath, this.diskStoragePath);
+      try {
+        this.lastDiskMtimeMs = fs.statSync(this.diskStoragePath).mtimeMs;
+      } catch {
+        this.lastDiskMtimeMs = updatedAt;
+      }
+    } catch (err) {
+      try {
+        const payload = JSON.stringify({ ...state, _updatedAt: updatedAt }, null, 2);
+        fs.writeFileSync(this.diskStoragePath, payload, 'utf8');
+        this.lastDiskMtimeMs = updatedAt;
+      } catch (innerErr) {
+        console.error('[byrdsnest api client] Failed to write disk state:', innerErr);
+      }
+    }
+  }
+
   public getState(): AppState {
-    const saved =
-      this.context.workspaceState.get<Partial<AppState>>(this.storageKey) ||
-      this.context.workspaceState.get<Partial<AppState>>(this.legacyStorageKey);
+    // Check if another VS Code window or profile updated the shared disk file
+    if (this.diskStoragePath && this.cachedState) {
+      try {
+        if (fs.existsSync(this.diskStoragePath)) {
+          const stat = fs.statSync(this.diskStoragePath);
+          if (stat.mtimeMs > this.lastDiskMtimeMs + 1) {
+            const diskData = this.readDiskState();
+            if (diskData) {
+              this.lastDiskMtimeMs = diskData.mtimeMs;
+              this.cachedState = this.normalizeState(diskData.state);
+              return this.cachedState;
+            }
+          }
+        }
+      } catch {
+        // Ignore stat errors and use cached state
+      }
+    }
+
+    if (this.cachedState) {
+      return this.cachedState;
+    }
+
+    const diskCandidate = this.readDiskState();
+    const globalSaved =
+      this.context?.globalState?.get<Partial<AppState>>(this.storageKey) ||
+      this.context?.globalState?.get<Partial<AppState>>(this.legacyStorageKey);
+    const globalUpdatedAt = this.context?.globalState?.get<number>(this.updatedAtKey) || 0;
+
+    const workspaceSaved =
+      this.context?.workspaceState?.get<Partial<AppState>>(this.storageKey) ||
+      this.context?.workspaceState?.get<Partial<AppState>>(this.legacyStorageKey);
+    const workspaceUpdatedAt = this.context?.workspaceState?.get<number>(this.updatedAtKey) || 0;
+
+    type Candidate = {
+      source: 'disk' | 'global' | 'workspace';
+      state: Partial<AppState>;
+      updatedAt: number;
+      isDefault: boolean;
+    };
+
+    const candidates: Candidate[] = [];
+    if (diskCandidate?.state) {
+      candidates.push({
+        source: 'disk',
+        state: diskCandidate.state,
+        updatedAt: diskCandidate.updatedAt,
+        isDefault: this.isDefaultTemplateState(diskCandidate.state),
+      });
+      this.lastDiskMtimeMs = diskCandidate.mtimeMs;
+    }
+    if (globalSaved) {
+      candidates.push({
+        source: 'global',
+        state: globalSaved,
+        updatedAt: globalUpdatedAt,
+        isDefault: this.isDefaultTemplateState(globalSaved),
+      });
+    }
+    if (workspaceSaved) {
+      candidates.push({
+        source: 'workspace',
+        state: workspaceSaved,
+        updatedAt: workspaceUpdatedAt,
+        isDefault: this.isDefaultTemplateState(workspaceSaved),
+      });
+    }
+
+    candidates.sort((a, b) => {
+      if (a.isDefault !== b.isDefault) {
+        return a.isDefault ? 1 : -1;
+      }
+      if (b.updatedAt !== a.updatedAt) {
+        return b.updatedAt - a.updatedAt;
+      }
+      const priority = { disk: 3, global: 2, workspace: 1 };
+      return priority[b.source] - priority[a.source];
+    });
+
+    const selected = candidates[0];
+    const saved = selected?.state;
+
     try {
       let normalized = this.normalizeState(saved);
-      // Auto-recover collections if state has only default template collection and a recovered backup exists in workspace
-      if (!saved || !saved.collections || saved.collections.length <= 1) {
+      // Auto-recover collections only when no saved state exists at all and a recovered backup exists in workspace
+      if (!saved) {
         const workspaceFolders = vscode?.workspace?.workspaceFolders;
         if (workspaceFolders && workspaceFolders.length > 0) {
           for (const wf of workspaceFolders) {
@@ -434,19 +629,58 @@ export class BlueByrdStateManager {
           }
         }
       }
+
+      this.cachedState = normalized;
+
+      // Migrate existing workspace/global state into shared disk & globalState so other profiles/windows see it immediately
+      if (selected && (selected.source !== 'disk' || !globalSaved || !workspaceSaved)) {
+        const now = selected.updatedAt || Date.now();
+        if (this.diskStoragePath && selected.source !== 'disk') {
+          this.writeDiskState(normalized, now);
+        }
+        try {
+          this.context?.globalState?.update(this.storageKey, normalized);
+          this.context?.globalState?.update(this.updatedAtKey, now);
+        } catch {
+          // Ignore if globalState is not present in mock context
+        }
+        try {
+          this.context?.workspaceState?.update(this.storageKey, normalized);
+          this.context?.workspaceState?.update(this.updatedAtKey, now);
+        } catch {
+          // Ignore if workspaceState is not present
+        }
+      }
+
       return normalized;
     } catch (err) {
       console.error('[byrdsnest api client] Error normalizing state, returning fallback:', err);
       const fallback = this.createDefaultState();
-      this.context.workspaceState.update(this.storageKey, fallback);
+      this.cachedState = fallback;
+      this.context?.workspaceState?.update(this.storageKey, fallback);
       return fallback;
     }
   }
 
   public save(state: AppState): void {
-    this.context.workspaceState.update(this.storageKey, state);
+    const normalized = this.normalizeState(state);
+    const now = Date.now();
+    this.cachedState = normalized;
+    this.writeDiskState(normalized, now);
     try {
-      this._onDidChangeState.fire(state);
+      this.context?.globalState?.update(this.storageKey, normalized);
+      this.context?.globalState?.update(this.updatedAtKey, now);
+    } catch {
+      // Ignore if globalState is not supported in mock context
+    }
+    try {
+      this.context?.workspaceState?.update(this.storageKey, normalized);
+      this.context?.workspaceState?.update(this.updatedAtKey, now);
+    } catch {
+      // Ignore if workspaceState is not supported in mock context
+    }
+    try {
+      this._onDidChangeState.fire(normalized);
     } catch (err) {
       console.error('[byrdsnest api client] Error firing onDidChangeState:', err);
     }
@@ -1089,6 +1323,9 @@ export class BlueByrdStateManager {
       // Update in folder
       const reqIdx = folder.requests.findIndex((r) => r.id === normalizedRequest.id);
       if (reqIdx >= 0) {
+        if (normalizedRequest.openApiDocs === undefined && folder.requests[reqIdx].openApiDocs) {
+          normalizedRequest.openApiDocs = folder.requests[reqIdx].openApiDocs;
+        }
         folder.requests[reqIdx] = normalizedRequest;
       } else {
         folder.requests.push(normalizedRequest);
@@ -1103,6 +1340,9 @@ export class BlueByrdStateManager {
       // Update in root
       const reqIdx = collection.requests.findIndex((r) => r.id === normalizedRequest.id);
       if (reqIdx >= 0) {
+        if (normalizedRequest.openApiDocs === undefined && collection.requests[reqIdx].openApiDocs) {
+          normalizedRequest.openApiDocs = collection.requests[reqIdx].openApiDocs;
+        }
         collection.requests[reqIdx] = normalizedRequest;
       } else {
         collection.requests.push(normalizedRequest);

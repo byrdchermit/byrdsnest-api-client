@@ -128,10 +128,7 @@ export class CommandManager {
     s.push(
       this.regCmd('newRequest', (treeItem?: BlueByrdTreeItem) => {
         const state = this.stateManager.getState();
-        const activeProfile = state.activeProfileId && state.activeProfileId !== 'all'
-          ? this.stateManager.getProfile(state.activeProfileId)
-          : state.profiles[0];
-        const activeEnv = state.activeEnvironmentName || Object.keys(state.environments)[0] || 'Local';
+        const activeEnv = state.activeEnvironmentName || '';
 
         const collection = treeItem?.kind === 'collection'
           ? treeItem.label
@@ -148,7 +145,6 @@ export class CommandManager {
             url: '{{baseUrl}}/',
             collection,
             folder,
-            profile: activeProfile?.name || state.profiles[0]?.name,
             environment: activeEnv,
           },
           this.stateManager,
@@ -903,7 +899,11 @@ export class CommandManager {
     s.push(
       this.regCmd('createFolder', async (treeItem?: BlueByrdTreeItem) => {
         const state = this.stateManager.getState();
-        let targetCollectionId = treeItem?.kind === 'collection' ? treeItem.itemId : undefined;
+        let targetCollectionId = treeItem?.kind === 'collection'
+          ? treeItem.itemId
+          : treeItem?.kind === 'folder'
+          ? treeItem.parentId
+          : undefined;
 
         if (!targetCollectionId) {
           const picks = state.collections.map((c) => ({ label: c.name, id: c.id }));

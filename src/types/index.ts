@@ -32,6 +32,85 @@ export interface StoredToken {
   clientId?: string;
 }
 
+export interface OpenApiParameterDoc {
+  name: string;
+  in: 'path' | 'query' | 'header' | 'cookie' | string;
+  required?: boolean;
+  deprecated?: boolean;
+  type: string;
+  format?: string;
+  description?: string;
+  enum?: string[];
+  defaultValue?: string;
+  example?: string;
+  nullable?: boolean;
+}
+
+export interface OpenApiSchemaPropertyDoc {
+  name: string;
+  type: string;
+  format?: string;
+  required?: boolean;
+  nullable?: boolean;
+  readOnly?: boolean;
+  deprecated?: boolean;
+  description?: string;
+  enum?: string[];
+  defaultValue?: string;
+  example?: string;
+}
+
+export interface OpenApiBodyDoc {
+  description?: string;
+  required?: boolean;
+  contentType: string;
+  schemaName?: string;
+  schemaType?: string;
+  properties?: OpenApiSchemaPropertyDoc[];
+  exampleJson?: string;
+}
+
+export interface OpenApiResponseHeaderDoc {
+  name: string;
+  type: string;
+  format?: string;
+  description?: string;
+}
+
+export interface OpenApiResponseDoc {
+  status: string;
+  description?: string;
+  contentType?: string;
+  schemaName?: string;
+  schemaType?: string;
+  headers?: OpenApiResponseHeaderDoc[];
+  properties?: OpenApiSchemaPropertyDoc[];
+  exampleJson?: string;
+}
+
+export interface OpenApiSecurityDoc {
+  schemeName: string;
+  type?: string;
+  in?: string;
+  paramName?: string;
+  description?: string;
+  scopes?: string[];
+}
+
+export interface OpenApiOperationDocs {
+  operationId?: string;
+  summary?: string;
+  description?: string;
+  method: string;
+  path: string;
+  tags?: string[];
+  deprecated?: boolean;
+  security?: OpenApiSecurityDoc[];
+  parameters?: OpenApiParameterDoc[];
+  requestBody?: OpenApiBodyDoc;
+  responses?: OpenApiResponseDoc[];
+}
+
 export type RequestContext = {
   id?: string;
   requestId?: string;
@@ -56,6 +135,7 @@ export type RequestContext = {
   preRequestScript?: string;
   postResponseScript?: string;
   baseUrlPreference?: 'collection' | 'environment' | 'none';
+  openApiDocs?: OpenApiOperationDocs;
 };
 
 export type BodyType = 'none' | 'json' | 'form-urlencoded' | 'form-data' | 'text' | 'xml' | 'raw';
@@ -123,6 +203,7 @@ export type RequestItem = {
   preRequestScript?: string;
   postResponseScript?: string;
   baseUrlPreference?: 'collection' | 'environment' | 'none';
+  openApiDocs?: OpenApiOperationDocs;
 };
 
 export type TestResultItem = {

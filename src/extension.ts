@@ -109,7 +109,15 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     commandManager.registerAll();
 
-    // 4. Check for Updates in Background (throttled to once every 24 hours)
+    // 4. Preload stored tokens from SecretStorage into memory
+    const initialProfileIds = stateManager.getState().profiles.map((p) => p.id);
+    tokenService.loadAllTokens(initialProfileIds).then(() => {
+      treeCoordinator.refresh();
+    }).catch((err) => {
+      console.warn('[byrdsnest api client] Failed to preload tokens:', err?.message);
+    });
+
+    // 5. Check for Updates in Background (throttled to once every 24 hours)
     updateService.checkForUpdates(false).catch((err) => {
       console.warn('[byrdsnest api client] Background update check error:', err?.message);
     });

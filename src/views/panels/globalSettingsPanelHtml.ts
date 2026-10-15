@@ -1,5 +1,5 @@
 import { AppState, DEFAULT_PROFILE_COLORS, Profile, StoredToken } from '../../types';
-import { renderAuthCss, renderAuthFieldsHtml } from './sharedAuthHtml';
+import { getSharedAuthClientScript, renderAuthCss, renderAuthFieldsHtml } from './sharedAuthHtml';
 
 export function getGlobalSettingsPanelHtml(
   state: AppState,
@@ -1151,6 +1151,8 @@ export function getGlobalSettingsPanelHtml(
         vscode.postMessage({ type: 'importBackup' });
       });
 
+      ${getSharedAuthClientScript()}
+
       // Save action
       document.getElementById('btn-save-all').addEventListener('click', () => {
         // Collect variables
@@ -1172,19 +1174,7 @@ export function getGlobalSettingsPanelHtml(
         });
 
         // Collect Auth
-        const authTypeEl = document.getElementById('auth-type-select');
-        const authType = authTypeEl ? authTypeEl.value : 'none';
-        const auth = { type: authType };
-        if (authType === 'bearer') {
-          auth.token = document.getElementById('auth-bearer-token')?.value || '';
-        } else if (authType === 'apiKey') {
-          auth.keyName = document.getElementById('auth-api-key-name')?.value || '';
-          auth.token = document.getElementById('auth-api-key-val')?.value || '';
-          auth.addTo = document.getElementById('auth-api-key-addto')?.value || 'header';
-        } else if (authType === 'basic') {
-          auth.username = document.getElementById('auth-basic-username')?.value || '';
-          auth.password = document.getElementById('auth-basic-password')?.value || '';
-        }
+        const auth = extractAuthValues();
 
         // Base URL preference
         const selectedPref = document.querySelector('input[name="baseUrlPreference"]:checked')?.value || 'auto';

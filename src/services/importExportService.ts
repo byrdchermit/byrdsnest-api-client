@@ -7,9 +7,17 @@ import {
   CollectionFolder,
   EnvironmentConfig,
   FormDataItem,
+  OpenApiBodyDoc,
+  OpenApiOperationDocs,
+  OpenApiParameterDoc,
+  OpenApiResponseDoc,
+  OpenApiResponseHeaderDoc,
+  OpenApiSchemaPropertyDoc,
+  OpenApiSecurityDoc,
   Profile,
   ProfileAuth,
   RequestItem,
+  VariableItem,
 } from '../types';
 
 export type ParsedImportResult =
@@ -560,37 +568,311 @@ export class ImportExportService {
   }
 
   // ==========================================
-  // OpenAPI 3.0 / Swagger 2.0 Parser
+  // OpenAPI 3.0 / 3.1 & Swagger 2.0 Parser
   // ==========================================
 
-  private static generateSchemaExample(schema: any, depth = 0): any {
-    if (depth > 4 || !schema || typeof schema !== 'object') return null;
-    if (schema.example !== undefined) return schema.example;
-    if (schema.default !== undefined) return schema.default;
+  private static resolveRef(ref: string, rootDoc: any): any {
+    if (!ref || typeof ref !== 'string' || !ref.startsWith('#/') || !rootDoc) {
+      return null;
+    }
+    const parts = ref
+      .substring(2)
+      .split('/')
+      .map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'));
+    let curr: any = rootDoc;
+    for (const part of parts) {
+      if (curr && typeof curr === 'object' && part in curr) {
+        curr = curr[part];
+      } else {
+        return null;
+      }
+    }
+    return curr;
+  }
 
-    if (schema.type === 'string') {
-      if (schema.enum && schema.enum.length > 0) return schema.enum[0];
-      if (schema.format === 'date-time') return new Date().toISOString();
-      if (schema.format === 'email') return 'user@example.com';
-      return 'string';
+  private static extractRefName(schema: any): string | undefined {
+    if (!schema || typeof schema !== 'object') return undefined;
+    const refStr =
+      schema.$ref ||
+      (Array.isArray(schema.allOf) && schema.allOf.length === 1 && schema.allOf[0]?.$ref) ||
+      (Array.isArray(schema.oneOf) && schema.oneOf[0]?.$ref) ||
+      (Array.isArray(schema.anyOf) && schema.anyOf[0]?.$ref);
+    if (typeof refStr === 'string' && refStr.includes('/')) {
+      return refStr.substring(refStr.lastIndexOf('/') + 1);
     }
-    if (schema.type === 'integer' || schema.type === 'number') {
-      return 0;
+    if (schema.type === 'array' && schema.items) {
+      const itemRef = this.extractRefName(schema.items);
+      if (itemRef) return `${itemRef}[]`;
     }
-    if (schema.type === 'boolean') {
-      return true;
+    return undefined;
+  }
+
+  private static resolveSchema(schema: any, rootDoc: any, visited = new Set<string>()): any {
+    if (!schema || typeof schema !== 'object') return schema;
+
+    if (typeof schema.$ref === 'string') {
+      if (visited.has(schema.$ref)) {
+        return {};
+      }
+      const nextVisited = new Set(visited);
+      nextVisited.add(schema.$ref);
+      const target = this.resolveRef(schema.$ref, rootDoc);
+      if (!target) return schema;
+      const resolvedTarget = this.resolveSchema(target, rootDoc, nextVisited);
+      const { $ref, ...siblings } = schema;
+      return { ...resolvedTarget, ...siblings };
     }
-    if (schema.type === 'array') {
-      const itemEx = this.generateSchemaExample(schema.items, depth + 1);
-      return itemEx !== null ? [itemEx] : [];
-    }
-    if (schema.type === 'object' || schema.properties) {
-      const result: Record<string, any> = {};
-      const props = schema.properties || {};
-      for (const [k, v] of Object.entries(props)) {
-        result[k] = this.generateSchemaExample(v, depth + 1);
+
+    if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
+      const mergedProps: Record<string, any> = {};
+      const mergedRequired = new Set<string>();
+      let mergedBase: Record<string, any> = {};
+
+      for (const sub of schema.allOf) {
+        const resolvedSub = this.resolveSchema(sub, rootDoc, new Set(visited));
+        if (resolvedSub && typeof resolvedSub === 'object') {
+          const { properties, required, ...rest } = resolvedSub;
+          mergedBase = { ...mergedBase, ...rest };
+          if (properties && typeof properties === 'object') {
+            Object.assign(mergedProps, properties);
+          }
+          if (Array.isArray(required)) {
+            required.forEach((r: string) => mergedRequired.add(r));
+          }
+        }
+      }
+
+      const { allOf, properties: ownProps, required: ownReq, ...ownRest } = schema;
+      if (ownProps && typeof ownProps === 'object') {
+        Object.assign(mergedProps, ownProps);
+      }
+      if (Array.isArray(ownReq)) {
+        ownReq.forEach((r: string) => mergedRequired.add(r));
+      }
+
+      const result: Record<string, any> = {
+        ...mergedBase,
+        ...ownRest,
+      };
+      if (Object.keys(mergedProps).length > 0) {
+        result.type = result.type || 'object';
+        result.properties = mergedProps;
+      }
+      if (mergedRequired.size > 0) {
+        result.required = Array.from(mergedRequired);
       }
       return result;
+    }
+
+    const choiceList = Array.isArray(schema.oneOf)
+      ? schema.oneOf
+      : Array.isArray(schema.anyOf)
+      ? schema.anyOf
+      : null;
+    if (choiceList && choiceList.length > 0) {
+      const firstCandidate = choiceList.find((c: any) => c && c.type !== 'null') || choiceList[0];
+      const resolvedCandidate = this.resolveSchema(firstCandidate, rootDoc, new Set(visited));
+      const { oneOf, anyOf, ...ownRest } = schema;
+      return { ...resolvedCandidate, ...ownRest };
+    }
+
+    return schema;
+  }
+
+  private static formatSchemaType(schema: any, rootDoc?: any): { type: string; format?: string; enumValues?: string[] } {
+    if (!schema || typeof schema !== 'object') {
+      return { type: 'any' };
+    }
+    const refName = this.extractRefName(schema);
+    const resolved = rootDoc ? this.resolveSchema(schema, rootDoc) : schema;
+    if (!resolved || typeof resolved !== 'object') {
+      return { type: refName || 'any' };
+    }
+
+    let enumValues: string[] | undefined = Array.isArray(resolved.enum)
+      ? resolved.enum.map((v: any) => String(v))
+      : undefined;
+
+    let baseType = Array.isArray(resolved.type)
+      ? resolved.type.filter((t: string) => t !== 'null').join(' | ') || 'string'
+      : resolved.type || (resolved.properties ? 'object' : 'string');
+
+    if (baseType === 'array' && resolved.items) {
+      const itemRef = this.extractRefName(resolved.items);
+      const resolvedItems = rootDoc ? this.resolveSchema(resolved.items, rootDoc) : resolved.items;
+      if (!enumValues && Array.isArray(resolvedItems?.enum)) {
+        enumValues = resolvedItems.enum.map((v: any) => String(v));
+      }
+      const itemType = itemRef || resolvedItems?.type || 'any';
+      baseType = `${itemType}[]`;
+    } else if (refName && (baseType === 'object' || enumValues)) {
+      baseType = enumValues ? `enum (${refName})` : refName;
+    } else if (enumValues) {
+      baseType = 'enum';
+    }
+
+    return {
+      type: baseType,
+      format: resolved.format,
+      enumValues,
+    };
+  }
+
+  private static extractSchemaProperties(
+    schema: any,
+    rootDoc: any,
+    maxProps = 60
+  ): OpenApiSchemaPropertyDoc[] {
+    if (!schema || typeof schema !== 'object') return [];
+    let resolved = this.resolveSchema(schema, rootDoc);
+    if (!resolved || typeof resolved !== 'object') return [];
+
+    if (resolved.type === 'array' && resolved.items) {
+      resolved = this.resolveSchema(resolved.items, rootDoc);
+    }
+    if (!resolved || typeof resolved !== 'object' || !resolved.properties) {
+      return [];
+    }
+
+    const requiredSet = new Set<string>(Array.isArray(resolved.required) ? resolved.required : []);
+    const props: OpenApiSchemaPropertyDoc[] = [];
+    const entries = Object.entries(resolved.properties);
+
+    for (let i = 0; i < Math.min(entries.length, maxProps); i++) {
+      const [propName, rawProp] = entries[i] as [string, any];
+      if (!rawProp || typeof rawProp !== 'object') continue;
+      const resolvedProp = this.resolveSchema(rawProp, rootDoc);
+      const typeInfo = this.formatSchemaType(rawProp, rootDoc);
+
+      props.push({
+        name: propName,
+        type: typeInfo.type,
+        format: typeInfo.format || resolvedProp?.format,
+        required: requiredSet.has(propName) || undefined,
+        nullable: rawProp.nullable === true || resolvedProp?.nullable === true || undefined,
+        readOnly: rawProp.readOnly === true || resolvedProp?.readOnly === true || undefined,
+        deprecated: rawProp.deprecated === true || resolvedProp?.deprecated === true || undefined,
+        description: rawProp.description || resolvedProp?.description || undefined,
+        enum: typeInfo.enumValues,
+        defaultValue:
+          rawProp.default !== undefined
+            ? String(rawProp.default)
+            : resolvedProp?.default !== undefined
+            ? String(resolvedProp.default)
+            : undefined,
+        example:
+          rawProp.example !== undefined
+            ? String(rawProp.example)
+            : resolvedProp?.example !== undefined
+            ? String(resolvedProp.example)
+            : undefined,
+      });
+    }
+
+    return props;
+  }
+
+  private static generateSchemaExample(
+    schema: any,
+    rootDoc?: any,
+    depth = 0,
+    visited = new Set<string>(),
+    forRequestBody = false,
+    maxDepth = 3
+  ): any {
+    if (depth > maxDepth || !schema || typeof schema !== 'object') return null;
+
+    const refKey =
+      typeof schema.$ref === 'string'
+        ? schema.$ref
+        : Array.isArray(schema.allOf) && schema.allOf.length === 1 && typeof schema.allOf[0]?.$ref === 'string'
+        ? schema.allOf[0].$ref
+        : undefined;
+    if (refKey) {
+      if (visited.has(refKey)) {
+        return null;
+      }
+      visited = new Set(visited);
+      visited.add(refKey);
+    }
+
+    const resolved = rootDoc ? this.resolveSchema(schema, rootDoc, new Set<string>()) : schema;
+    if (!resolved || typeof resolved !== 'object') return null;
+
+    if (resolved.example !== undefined) return resolved.example;
+    if (resolved.default !== undefined) return resolved.default;
+    if (Array.isArray(resolved.enum) && resolved.enum.length > 0) {
+      return resolved.enum[0];
+    }
+
+    const schemaType = Array.isArray(resolved.type)
+      ? resolved.type.find((t: string) => t !== 'null') || 'string'
+      : resolved.type;
+
+    if (schemaType === 'string') {
+      if (resolved.format === 'uuid' || resolved.format === 'guid') {
+        return '00000000-0000-0000-0000-000000000000';
+      }
+      if (resolved.format === 'date-time') return '2026-01-01T00:00:00Z';
+      if (resolved.format === 'date') return '2026-01-01';
+      if (resolved.format === 'email') return 'user@example.com';
+      if (resolved.format === 'uri' || resolved.format === 'url') return 'https://example.com';
+      if (resolved.format === 'ipv4') return '127.0.0.1';
+      return 'string';
+    }
+    if (schemaType === 'integer' || schemaType === 'number') {
+      return typeof resolved.minimum === 'number' ? resolved.minimum : 0;
+    }
+    if (schemaType === 'boolean') {
+      return true;
+    }
+    if (schemaType === 'array') {
+      if (depth >= maxDepth) return [];
+      const itemEx = this.generateSchemaExample(
+        resolved.items,
+        rootDoc,
+        depth + 1,
+        visited,
+        forRequestBody,
+        maxDepth
+      );
+      return itemEx !== null && itemEx !== undefined ? [itemEx] : [];
+    }
+    if (schemaType === 'object' || resolved.properties) {
+      const result: Record<string, any> = {};
+      const props = resolved.properties || {};
+      const entries = Object.entries(props);
+      // Keep deeply nested large DTOs concise
+      const limit = depth >= 2 ? Math.min(entries.length, 20) : Math.min(entries.length, 50);
+      for (let i = 0; i < limit; i++) {
+        const [k, v] = entries[i] as [string, any];
+        if (!v || typeof v !== 'object') continue;
+        if (forRequestBody && v.readOnly === true) continue;
+        if (!forRequestBody && v.writeOnly === true) continue;
+        const propVal = this.generateSchemaExample(
+          v,
+          rootDoc,
+          depth + 1,
+          visited,
+          forRequestBody,
+          maxDepth
+        );
+        if (propVal !== undefined) {
+          result[k] = propVal;
+        }
+      }
+      return result;
+    }
+    if (resolved.additionalProperties && typeof resolved.additionalProperties === 'object') {
+      const valEx = this.generateSchemaExample(
+        resolved.additionalProperties,
+        rootDoc,
+        depth + 1,
+        visited,
+        forRequestBody,
+        maxDepth
+      );
+      return { key: valEx ?? 'string' };
     }
     return null;
   }
@@ -602,15 +884,131 @@ export class ImportExportService {
     const colName = `${title} ${version}`.trim();
     const notes = data.info?.description || '';
 
-    // Extract Base URL
+    // Extract Base URL (handling OpenAPI 3 server variables and Swagger 2 host/basePath)
     let baseUrl = 'https://api.example.com';
     if (Array.isArray(data.servers) && data.servers[0]?.url) {
-      baseUrl = data.servers[0].url.replace(/\/$/, '');
+      let rawServerUrl = String(data.servers[0].url).trim();
+      const serverVars = data.servers[0].variables;
+      if (serverVars && typeof serverVars === 'object') {
+        for (const [vName, vDef] of Object.entries(serverVars)) {
+          const defVal = (vDef as any)?.default !== undefined ? String((vDef as any).default) : '';
+          if (defVal) {
+            rawServerUrl = rawServerUrl.replace(new RegExp(`\\{${vName}\\}`, 'g'), defVal);
+          }
+        }
+      }
+      rawServerUrl = rawServerUrl.replace(/\/$/, '');
+      if (rawServerUrl && rawServerUrl !== '/') {
+        baseUrl = rawServerUrl;
+      }
     } else if (data.host) {
       const scheme = Array.isArray(data.schemes) && data.schemes[0] ? data.schemes[0] : 'https';
       const basePath = data.basePath ? data.basePath.replace(/\/$/, '') : '';
       baseUrl = `${scheme}://${data.host}${basePath}`;
     }
+
+    // Extract Tag descriptions for Folders
+    const tagDescriptions = new Map<string, string>();
+    if (Array.isArray(data.tags)) {
+      for (const t of data.tags) {
+        if (t && typeof t.name === 'string' && t.description) {
+          tagDescriptions.set(t.name, String(t.description));
+        }
+      }
+    }
+
+    // Extract Security Schemes (OpenAPI 3 components.securitySchemes / Swagger 2 securityDefinitions)
+    const securitySchemes: Record<string, any> =
+      (data.components?.securitySchemes && typeof data.components.securitySchemes === 'object'
+        ? data.components.securitySchemes
+        : data.securityDefinitions && typeof data.securityDefinitions === 'object'
+        ? data.securityDefinitions
+        : {}) || {};
+
+    // Derive Collection-level Auth if a primary security scheme is defined
+    let colAuth: AuthSettings | undefined;
+    const schemeEntries = Object.entries(securitySchemes);
+    if (schemeEntries.length > 0) {
+      const [, firstScheme] = schemeEntries[0] as [string, any];
+      if (firstScheme && typeof firstScheme === 'object') {
+        const sType = String(firstScheme.type || '').toLowerCase();
+        if (sType === 'http' && String(firstScheme.scheme || '').toLowerCase() === 'bearer') {
+          colAuth = {
+            auth: {
+              type: 'bearer',
+              token: '{{accessToken}}',
+              headerName: 'Authorization',
+              headerPrefix: 'Bearer',
+            },
+          };
+        } else if (sType === 'http' && String(firstScheme.scheme || '').toLowerCase() === 'basic') {
+          colAuth = {
+            auth: {
+              type: 'basic',
+              username: '{{username}}',
+              password: '{{password}}',
+            },
+          };
+        } else if (sType === 'apikey') {
+          colAuth = {
+            auth: {
+              type: 'apiKey',
+              keyName: firstScheme.name || 'Authorization',
+              headerName: firstScheme.name || 'Authorization',
+              token: '{{apiKey}}',
+              addTo: firstScheme.in === 'query' ? 'query' : 'header',
+            },
+          };
+        }
+      }
+    }
+
+    // Caches for fast schema example & property resolution on large specs (e.g. Jellyfin 63k lines)
+    const reqBodyExampleCache = new Map<string, string>();
+    const respExampleCache = new Map<string, string>();
+    const schemaPropsCache = new Map<string, OpenApiSchemaPropertyDoc[]>();
+
+    const getCachedSchemaProps = (schema: any): OpenApiSchemaPropertyDoc[] => {
+      if (!schema || typeof schema !== 'object') return [];
+      const cacheKey =
+        schema.$ref ||
+        (Array.isArray(schema.allOf) && schema.allOf.length === 1 ? schema.allOf[0]?.$ref : undefined) ||
+        (schema.type === 'array' && schema.items?.$ref ? `arr:${schema.items.$ref}` : undefined);
+      if (cacheKey && schemaPropsCache.has(cacheKey)) {
+        return schemaPropsCache.get(cacheKey)!;
+      }
+      const computed = this.extractSchemaProperties(schema, data);
+      if (cacheKey) {
+        schemaPropsCache.set(cacheKey, computed);
+      }
+      return computed;
+    };
+
+    const getCachedExampleJson = (schema: any, forReqBody: boolean): string | undefined => {
+      if (!schema || typeof schema !== 'object') return undefined;
+      const cacheMap = forReqBody ? reqBodyExampleCache : respExampleCache;
+      const cacheKey =
+        schema.$ref ||
+        (Array.isArray(schema.allOf) && schema.allOf.length === 1 ? schema.allOf[0]?.$ref : undefined) ||
+        (schema.type === 'array' && schema.items?.$ref ? `arr:${schema.items.$ref}` : undefined);
+      if (cacheKey && cacheMap.has(cacheKey)) {
+        return cacheMap.get(cacheKey)!;
+      }
+      const ex = this.generateSchemaExample(
+        schema,
+        data,
+        0,
+        new Set<string>(),
+        forReqBody,
+        forReqBody ? 3 : 2
+      );
+      if (ex === null || ex === undefined) return undefined;
+      const jsonStr = typeof ex === 'string' ? ex : JSON.stringify(ex, null, 2);
+      if (cacheKey) {
+        cacheMap.set(cacheKey, jsonStr);
+      }
+      return jsonStr;
+    };
 
     const tagFolders = new Map<string, RequestItem[]>();
     const rootRequests: RequestItem[] = [];
@@ -627,22 +1025,106 @@ export class ImportExportService {
         const op = (pathItem as any)[method];
         if (!op || typeof op !== 'object') continue;
 
-        const allParams = [...pathParams, ...(Array.isArray(op.parameters) ? op.parameters : [])];
+        // Merge path-level and operation-level parameters (resolving $ref on parameters)
+        const rawParams = [...pathParams, ...(Array.isArray(op.parameters) ? op.parameters : [])];
+        const paramMap = new Map<string, any>();
+        for (const rawP of rawParams) {
+          const resolvedP = rawP?.$ref ? this.resolveRef(rawP.$ref, data) || rawP : rawP;
+          if (resolvedP && resolvedP.name) {
+            paramMap.set(`${resolvedP.in || 'query'}:${resolvedP.name}`, resolvedP);
+          }
+        }
+        const allParams = Array.from(paramMap.values());
+
         const headers: Record<string, string> = {};
         const queryParts: string[] = [];
+        const requestVariables: VariableItem[] = [];
+        const addedVarNames = new Set<string>();
+        const paramDocs: OpenApiParameterDoc[] = [];
 
         for (const param of allParams) {
-          if (!param || !param.name) continue;
-          const val = param.example !== undefined
-            ? String(param.example)
-            : param.schema?.example !== undefined
-            ? String(param.schema.example)
-            : '';
+          if (!param || !param.name || param.in === 'body') continue;
 
-          if (param.in === 'header' && this.isSafeKey(param.name)) {
-            headers[param.name] = val;
+          const paramSchema = param.schema || param;
+          const resolvedParamSchema = this.resolveSchema(paramSchema, data);
+          const typeInfo = this.formatSchemaType(paramSchema, data);
+
+          const explicitExample =
+            param.example !== undefined
+              ? String(param.example)
+              : resolvedParamSchema?.example !== undefined
+              ? String(resolvedParamSchema.example)
+              : undefined;
+          const defaultVal =
+            param.default !== undefined
+              ? String(param.default)
+              : resolvedParamSchema?.default !== undefined
+              ? String(resolvedParamSchema.default)
+              : undefined;
+
+          let sampleVal = explicitExample ?? defaultVal ?? '';
+          if (!sampleVal && param.in === 'path') {
+            if (typeInfo.enumValues && typeInfo.enumValues.length > 0) {
+              sampleVal = typeInfo.enumValues[0];
+            } else if (typeInfo.format === 'uuid' || typeInfo.format === 'guid') {
+              sampleVal = '00000000-0000-0000-0000-000000000000';
+            } else if (typeInfo.type.startsWith('integer') || typeInfo.type.startsWith('number')) {
+              sampleVal = '1';
+            } else {
+              sampleVal = param.name;
+            }
+          }
+
+          paramDocs.push({
+            name: param.name,
+            in: param.in || 'query',
+            required: param.required === true || param.in === 'path' || undefined,
+            deprecated: param.deprecated === true || resolvedParamSchema?.deprecated === true || undefined,
+            type: typeInfo.type,
+            format: typeInfo.format,
+            description: param.description || resolvedParamSchema?.description || undefined,
+            enum: typeInfo.enumValues,
+            defaultValue: defaultVal,
+            example: explicitExample,
+            nullable: param.nullable === true || resolvedParamSchema?.nullable === true || undefined,
+          });
+
+          if (param.in === 'path') {
+            if (!addedVarNames.has(param.name)) {
+              addedVarNames.add(param.name);
+              requestVariables.push({
+                name: param.name,
+                value: sampleVal,
+                enabled: true,
+              });
+            }
+          } else if (param.in === 'header' && this.isSafeKey(param.name)) {
+            headers[param.name] = sampleVal || (typeInfo.enumValues?.[0] ?? '');
           } else if (param.in === 'query') {
-            queryParts.push(`${encodeURIComponent(param.name)}=${encodeURIComponent(val)}`);
+            // Only auto-append query parameters to the URL if required or an explicit example is given
+            // Optional query parameters remain one-click insertable from the OpenAPI Docs tab!
+            if (param.required === true || explicitExample !== undefined) {
+              const qVal =
+                explicitExample ??
+                defaultVal ??
+                (typeInfo.enumValues && typeInfo.enumValues.length > 0 ? typeInfo.enumValues[0] : '');
+              queryParts.push(`${encodeURIComponent(param.name)}=${encodeURIComponent(qVal)}`);
+            }
+          }
+        }
+
+        // Ensure any {param} tokens in pathKey are also registered in requestVariables
+        const pathTokenRegex = /(?<!\{)\{([^{}]+)\}(?!\})/g;
+        let pathMatch: RegExpExecArray | null;
+        while ((pathMatch = pathTokenRegex.exec(pathKey)) !== null) {
+          const tokenName = pathMatch[1].trim();
+          if (tokenName && !addedVarNames.has(tokenName)) {
+            addedVarNames.add(tokenName);
+            requestVariables.push({
+              name: tokenName,
+              value: tokenName,
+              enabled: true,
+            });
           }
         }
 
@@ -655,28 +1137,241 @@ export class ImportExportService {
         const fullUrl = `{{baseUrl}}${convertedPath}`;
         let body = '';
         let bodyType: BodyType = 'none';
+        let bodyFormData: FormDataItem[] | undefined;
+        let requestBodyDoc: OpenApiBodyDoc | undefined;
 
-        // Check OpenAPI 3 requestBody
-        const rb = op.requestBody;
-        if (rb?.content?.['application/json']) {
-          bodyType = 'json';
-          const ex = rb.content['application/json'].example ??
-            this.generateSchemaExample(rb.content['application/json'].schema);
-          body = ex !== null ? JSON.stringify(ex, null, 2) : '{}';
-          headers['Content-Type'] = 'application/json';
+        // Check OpenAPI 3 requestBody (resolving $ref if needed)
+        const rawRb = op.requestBody;
+        const rb = rawRb?.$ref ? this.resolveRef(rawRb.$ref, data) || rawRb : rawRb;
+        if (rb && rb.content && typeof rb.content === 'object') {
+          const contentKeys = Object.keys(rb.content);
+          const jsonKey =
+            contentKeys.find((k) => k.toLowerCase() === 'application/json') ||
+            contentKeys.find((k) => k.toLowerCase().includes('json'));
+          const formUrlKey = contentKeys.find((k) => k.toLowerCase().includes('x-www-form-urlencoded'));
+          const multipartKey = contentKeys.find((k) => k.toLowerCase().includes('multipart/form-data'));
+          const xmlKey = contentKeys.find((k) => k.toLowerCase().includes('xml'));
+          const textKey = contentKeys.find((k) => k.toLowerCase().includes('text/plain'));
+          const primaryKey = jsonKey || formUrlKey || multipartKey || xmlKey || textKey || contentKeys[0];
+
+          if (primaryKey) {
+            const mediaObj = rb.content[primaryKey];
+            const rawSchema = mediaObj?.schema;
+            const schemaName = this.extractRefName(rawSchema);
+            const typeInfo = this.formatSchemaType(rawSchema, data);
+            const schemaProps = getCachedSchemaProps(rawSchema);
+
+            if (jsonKey) {
+              bodyType = 'json';
+              let exJson: string | undefined;
+              if (mediaObj?.example !== undefined) {
+                exJson = JSON.stringify(mediaObj.example, null, 2);
+              } else {
+                exJson = getCachedExampleJson(rawSchema, true);
+              }
+              body = exJson || '{}';
+              headers['Content-Type'] = 'application/json';
+              requestBodyDoc = {
+                description: rb.description || rawSchema?.description || undefined,
+                required: rb.required === true || undefined,
+                contentType: 'application/json',
+                schemaName,
+                schemaType: typeInfo.type,
+                properties: schemaProps.length > 0 ? schemaProps : undefined,
+                exampleJson: body,
+              };
+            } else if (formUrlKey) {
+              bodyType = 'form-urlencoded';
+              headers['Content-Type'] = 'application/x-www-form-urlencoded';
+              bodyFormData = schemaProps.map((p) => ({
+                key: p.name,
+                value: p.example ?? p.defaultValue ?? '',
+                enabled: true,
+              }));
+              body = bodyFormData
+                .map((item) => `${encodeURIComponent(item.key)}=${encodeURIComponent(item.value)}`)
+                .join('&');
+              requestBodyDoc = {
+                description: rb.description || undefined,
+                required: rb.required === true || undefined,
+                contentType: 'application/x-www-form-urlencoded',
+                schemaName,
+                schemaType: typeInfo.type,
+                properties: schemaProps.length > 0 ? schemaProps : undefined,
+              };
+            } else if (multipartKey) {
+              bodyType = 'form-data';
+              bodyFormData = schemaProps.map((p) => ({
+                key: p.name,
+                value: p.example ?? p.defaultValue ?? '',
+                enabled: true,
+                type: p.format === 'binary' ? 'file' : 'text',
+              }));
+              requestBodyDoc = {
+                description: rb.description || undefined,
+                required: rb.required === true || undefined,
+                contentType: 'multipart/form-data',
+                schemaName,
+                schemaType: typeInfo.type,
+                properties: schemaProps.length > 0 ? schemaProps : undefined,
+              };
+            } else if (xmlKey) {
+              bodyType = 'xml';
+              headers['Content-Type'] = primaryKey;
+              requestBodyDoc = {
+                description: rb.description || undefined,
+                required: rb.required === true || undefined,
+                contentType: primaryKey,
+                schemaName,
+                schemaType: typeInfo.type,
+                properties: schemaProps.length > 0 ? schemaProps : undefined,
+              };
+            } else {
+              bodyType = 'text';
+              headers['Content-Type'] = primaryKey;
+              const exJson = getCachedExampleJson(rawSchema, true);
+              body = exJson || '';
+              requestBodyDoc = {
+                description: rb.description || undefined,
+                required: rb.required === true || undefined,
+                contentType: primaryKey,
+                schemaName,
+                schemaType: typeInfo.type,
+                properties: schemaProps.length > 0 ? schemaProps : undefined,
+                exampleJson: exJson,
+              };
+            }
+          }
         } else {
-          // Check Swagger 2 body parameter
+          // Check Swagger 2 body or formData parameters
           const bodyParam = allParams.find((p: any) => p?.in === 'body');
           if (bodyParam) {
             bodyType = 'json';
-            const ex = bodyParam.schema ? this.generateSchemaExample(bodyParam.schema) : null;
-            body = ex !== null ? JSON.stringify(ex, null, 2) : '{}';
+            const rawSchema = bodyParam.schema;
+            const schemaName = this.extractRefName(rawSchema);
+            const typeInfo = this.formatSchemaType(rawSchema, data);
+            const schemaProps = getCachedSchemaProps(rawSchema);
+            const exJson = rawSchema ? getCachedExampleJson(rawSchema, true) : undefined;
+            body = exJson || '{}';
             headers['Content-Type'] = 'application/json';
+            requestBodyDoc = {
+              description: bodyParam.description || undefined,
+              required: bodyParam.required === true || undefined,
+              contentType: 'application/json',
+              schemaName,
+              schemaType: typeInfo.type,
+              properties: schemaProps.length > 0 ? schemaProps : undefined,
+              exampleJson: body,
+            };
           }
         }
 
-        const reqName = op.summary || `${method.toUpperCase()} ${pathKey}`;
+        // Extract Responses & Schemas
+        const responseDocs: OpenApiResponseDoc[] = [];
+        if (op.responses && typeof op.responses === 'object') {
+          for (const [statusCode, rawResp] of Object.entries(op.responses)) {
+            const respObj = (rawResp as any)?.$ref
+              ? this.resolveRef((rawResp as any).$ref, data) || rawResp
+              : (rawResp as any);
+            if (!respObj || typeof respObj !== 'object') continue;
+
+            let respContentType: string | undefined;
+            let respRawSchema: any;
+            let respExplicitExample: any;
+
+            if (respObj.content && typeof respObj.content === 'object') {
+              const cKeys = Object.keys(respObj.content);
+              respContentType =
+                cKeys.find((k) => k.toLowerCase() === 'application/json') ||
+                cKeys.find((k) => k.toLowerCase().includes('json')) ||
+                cKeys[0];
+              if (respContentType && respObj.content[respContentType]) {
+                respRawSchema = respObj.content[respContentType].schema;
+                respExplicitExample = respObj.content[respContentType].example;
+              }
+            } else if (respObj.schema) {
+              // Swagger 2.0 response schema
+              respContentType = 'application/json';
+              respRawSchema = respObj.schema;
+            }
+
+            const respHeaders: OpenApiResponseHeaderDoc[] = [];
+            if (respObj.headers && typeof respObj.headers === 'object') {
+              for (const [hName, rawH] of Object.entries(respObj.headers)) {
+                const hObj = (rawH as any)?.$ref ? this.resolveRef((rawH as any).$ref, data) || rawH : (rawH as any);
+                if (!hObj || typeof hObj !== 'object') continue;
+                const hSchema = hObj.schema || hObj;
+                const hType = this.formatSchemaType(hSchema, data);
+                respHeaders.push({
+                  name: hName,
+                  type: hType.type,
+                  format: hType.format,
+                  description: hObj.description || undefined,
+                });
+              }
+            }
+
+            const respSchemaName = this.extractRefName(respRawSchema);
+            const respTypeInfo = respRawSchema ? this.formatSchemaType(respRawSchema, data) : undefined;
+            const respProps = respRawSchema ? getCachedSchemaProps(respRawSchema) : [];
+            let respExampleJson: string | undefined;
+            if (respExplicitExample !== undefined) {
+              respExampleJson = JSON.stringify(respExplicitExample, null, 2);
+            } else if (respRawSchema && respContentType && respContentType.toLowerCase().includes('json')) {
+              respExampleJson = getCachedExampleJson(respRawSchema, false);
+            }
+
+            responseDocs.push({
+              status: statusCode,
+              description: respObj.description || undefined,
+              contentType: respContentType,
+              schemaName: respSchemaName,
+              schemaType: respTypeInfo?.type,
+              headers: respHeaders.length > 0 ? respHeaders : undefined,
+              properties: respProps.length > 0 ? respProps : undefined,
+              exampleJson: respExampleJson,
+            });
+          }
+        }
+
+        // Extract Security requirements for this operation
+        const rawSecurity = Array.isArray(op.security)
+          ? op.security
+          : Array.isArray(data.security)
+          ? data.security
+          : [];
+        const securityDocs: OpenApiSecurityDoc[] = [];
+        for (const secItem of rawSecurity) {
+          if (!secItem || typeof secItem !== 'object') continue;
+          for (const [schemeName, scopes] of Object.entries(secItem)) {
+            const schemeDef = securitySchemes[schemeName];
+            securityDocs.push({
+              schemeName,
+              type: schemeDef?.type || undefined,
+              in: schemeDef?.in || undefined,
+              paramName: schemeDef?.name || schemeDef?.scheme || undefined,
+              description: schemeDef?.description || undefined,
+              scopes: Array.isArray(scopes) ? scopes.map((s) => String(s)) : undefined,
+            });
+          }
+        }
+
+        const reqName = op.summary || op.operationId || `${method.toUpperCase()} ${pathKey}`;
         const tag = Array.isArray(op.tags) && op.tags.length > 0 ? op.tags[0] : undefined;
+
+        const openApiDocs: OpenApiOperationDocs = {
+          operationId: op.operationId || undefined,
+          summary: op.summary || undefined,
+          description: op.description || undefined,
+          method: method.toUpperCase(),
+          path: pathKey,
+          tags: Array.isArray(op.tags) ? op.tags : undefined,
+          deprecated: op.deprecated === true || undefined,
+          security: securityDocs.length > 0 ? securityDocs : undefined,
+          parameters: paramDocs.length > 0 ? paramDocs : undefined,
+          requestBody: requestBodyDoc,
+          responses: responseDocs.length > 0 ? responseDocs : undefined,
+        };
 
         const reqItem: RequestItem = {
           id: this.generateId('req'),
@@ -686,10 +1381,13 @@ export class ImportExportService {
           headers,
           body,
           bodyType,
+          bodyFormData,
+          variables: requestVariables.length > 0 ? requestVariables : undefined,
           collection: colName,
           collectionId: colId,
           folder: tag,
           notes: op.description || op.summary || '',
+          openApiDocs,
         };
 
         if (tag) {
@@ -713,17 +1411,21 @@ export class ImportExportService {
         id: folderId,
         name: folderName,
         requests,
+        notes: tagDescriptions.get(folderName) || undefined,
       });
     }
 
     return {
       id: colId,
       name: colName,
+      baseUrl,
+      baseUrlDisabled: false,
       folders,
       requests: rootRequests,
       variables: {
         baseUrl,
       },
+      auth: colAuth,
       notes,
     };
   }
@@ -894,6 +1596,11 @@ export class ImportExportService {
       body,
       bodyType,
       bodyFormData: bodyFormData.length > 0 ? bodyFormData : undefined,
+      variables: Array.isArray(r.variables) ? r.variables : undefined,
+      preRequestScript: typeof r.preRequestScript === 'string' ? r.preRequestScript : undefined,
+      postResponseScript: typeof r.postResponseScript === 'string' ? r.postResponseScript : undefined,
+      baseUrlPreference: r.baseUrlPreference,
+      openApiDocs: r.openApiDocs && typeof r.openApiDocs === 'object' ? r.openApiDocs : undefined,
       collection: collectionName,
       collectionId,
       folder: folderName,

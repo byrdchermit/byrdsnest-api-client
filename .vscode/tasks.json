@@ -2,16 +2,21 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "compile",
+      "label": "npm: compile",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/node_modules/typescript/bin/tsc",
+        "-p",
+        "${workspaceFolder}/tsconfig.json"
+      ],
       "group": {
         "kind": "build",
         "isDefault": true
       },
       "problemMatcher": [
         "$tsc"
-      ],
-      "label": "npm: compile"
+      ]
     }
   ]
 }

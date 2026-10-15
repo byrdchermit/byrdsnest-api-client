@@ -357,7 +357,6 @@ export class BlueByrdExplorerTreeDataProvider
       body: req.body,
       bodyType: req.bodyType,
       bodyFormData: req.bodyFormData,
-      profile: req.profile,
       environment: req.environment,
       collection: collectionName || req.collection,
       collectionId: collectionId || req.collectionId,
@@ -366,6 +365,10 @@ export class BlueByrdExplorerTreeDataProvider
       auth: req.auth,
       notes: req.notes,
       variables: req.variables,
+      preRequestScript: req.preRequestScript,
+      postResponseScript: req.postResponseScript,
+      baseUrlPreference: req.baseUrlPreference,
+      openApiDocs: req.openApiDocs,
     };
 
     return new BlueByrdTreeItem(

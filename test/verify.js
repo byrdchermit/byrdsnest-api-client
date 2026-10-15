@@ -3016,9 +3016,10 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     assert(profileSettingsHtml.includes('value="#8b5cf6"'), 'Profile Settings HTML must populate current profile color');
     assert(profileSettingsHtml.includes('--primary: #8b5cf6;'), 'Profile Settings HTML must theme --primary with profile color');
 
-    // 5. Verify Request Panel HTML renders active profile accent and indicator dot
+    // 5. Verify Request Panel HTML renders active workspace profile accent without a per-request profile selector
+    state50.activeProfileId = 'profile-dev';
     const requestPanelHtml = getRequestPanelHtml(
-      { profileId: 'profile-dev' },
+      {},
       state50,
       [],
       [],
@@ -3026,8 +3027,8 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     );
     assert(requestPanelHtml.includes('--profile-accent: #10b981;'), 'Request Panel HTML must set --profile-accent to active profile color');
     assert(requestPanelHtml.includes('--primary: var(--profile-accent);'), 'Request Panel HTML must bind --primary to --profile-accent');
-    assert(requestPanelHtml.includes('id="profile-indicator-dot"'), 'Request Panel HTML must render profile indicator dot');
-    assert(requestPanelHtml.includes('data-color="#10b981"'), 'Profile option in Request Panel must carry data-color');
+    assert(!requestPanelHtml.includes('id="select-profile"'), 'Request Panel HTML must NOT allow setting a profile on a request');
+    assert(requestPanelHtml.includes('id="select-env"'), 'Request Panel HTML must render environment selector');
 
     // 6. Verify Tools Tree Provider has Manage Profiles & Settings (no longer has collapsible Profiles section)
     const toolsProvider50 = new BlueByrdToolsTreeProvider(stateManager50);
@@ -3413,10 +3414,11 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     const inlineExports = contextMenus.filter(m => (m.command === 'byrdsnestApiClient.exportCollection' || m.command === 'byrdsnestApiClient.exportEnvironment') && m.group && m.group.startsWith('inline'));
     assert.strictEqual(inlineExports.length, 0, 'No export action may be placed in an inline group');
 
-    // Collection hover must only have inline@1 (newRequest), not 4 stacked icons
+    // Collection hover must only have essential inline actions (newRequest and createFolder), not stacked icons like delete and export
     const colInlineActions = contextMenus.filter(m => m.when && m.when.includes('byrdsnest.collection') && m.group && m.group.startsWith('inline'));
-    assert.strictEqual(colInlineActions.length, 1, 'Collection item hover must only have 1 inline action (newRequest)');
-    assert.strictEqual(colInlineActions[0].command, 'byrdsnestApiClient.newRequest');
+    assert(colInlineActions.length <= 2, 'Collection item hover must not exceed 2 essential inline actions (newRequest, createFolder)');
+    const allowedCommands = ['byrdsnestApiClient.newRequest', 'byrdsnestApiClient.createFolder'];
+    colInlineActions.forEach(a => assert(allowedCommands.includes(a.command), 'Only newRequest and createFolder may be inline'));
 
     // 2. Verify variable deduplication in environment resolution
     const sm55 = new BlueByrdStateManager(mockContext);
@@ -3527,7 +3529,8 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     assert(reqPanelHtml.includes('json-highlight-backdrop'), 'Request Panel must render #json-highlight-backdrop');
     assert(reqPanelHtml.includes('json-line-numbers'), 'Request Panel must render #json-line-numbers gutter');
     assert(reqPanelHtml.includes('profile-guard-badge'), 'Request Panel must render #profile-guard-badge');
-    assert(reqPanelHtml.includes('data-guards='), 'Profile option elements must embed data-guards attribute');
+    assert(reqPanelHtml.includes('"confirmationKeyword":"PRODUCTION"'), 'Request Panel must embed active profile guards in currentProfiles state');
+    assert(!reqPanelHtml.includes('id="select-profile"'), 'Request Panel must not render per-request profile selector');
 
     // Verify script integrity of the Request Panel with editor and guards
     const scriptMatch = reqPanelHtml.match(/<script>([\s\S]*?)<\/script>/);
@@ -4597,7 +4600,596 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     console.log('✓ Scanned Import Preview & Selective Import (Backup, Collection, Environment) verified');
   }
 
-  console.log('\nAll 67 verification test suites passed successfully! 🎉');
+  // Test 68: Cross-Profile & Cross-Restart Persistence + Full Request/Auth Field Preservation
+  {
+    const fs = require('fs');
+    const os = require('os');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'byrdsnest-persist-test-'));
+    const diskStateFile = path.join(tmpDir, 'state.json');
+
+    try {
+      // Simulate Session 1 (Profile A / Workspace A) saving changes
+      const wsStoreA = new Map();
+      const globalStoreA = new Map();
+      const ctxA = {
+        workspaceState: {
+          get: (k) => wsStoreA.get(k),
+          update: (k, v) => { wsStoreA.set(k, v); return Promise.resolve(); },
+        },
+        globalState: {
+          get: (k) => globalStoreA.get(k),
+          update: (k, v) => { globalStoreA.set(k, v); return Promise.resolve(); },
+          setKeysForSync: () => {},
+        },
+      };
+
+      const mgrA = new BlueByrdStateManager(ctxA, diskStateFile);
+      mgrA.saveProfile({
+        id: 'prof-custom',
+        name: 'Custom Persistent Profile',
+        color: '#8b5cf6',
+        auth: {
+          type: 'bearer',
+          token: 'secret-jwt-123',
+          selectedTokenId: 'tok-vault-99',
+          headerName: 'Authorization',
+          headerPrefix: 'Bearer',
+        },
+        variables: { apiVersion: 'v2' },
+        headers: { 'X-Profile-Header': 'yes' },
+        notes: 'Persisted across restarts and profiles',
+      });
+
+      const savedReq = mgrA.saveRequest({
+        id: 'req-full-persist',
+        name: 'Full Field Request',
+        method: 'POST',
+        url: '{{baseUrl}}/items',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{"name":"item"}',
+        bodyType: 'json',
+        bodyFormData: [{ key: 'f1', value: 'v1', enabled: true }],
+        profile: 'Custom Persistent Profile',
+        environment: 'Staging',
+        baseUrlPreference: 'collection',
+        auth: {
+          inheritFromProfile: false,
+          auth: { type: 'apiKey', keyName: 'X-Custom-Key', token: 'k-123', addTo: 'header' },
+        },
+        notes: 'Important request notes',
+        variables: [{ name: 'localVar', value: 'localVal', enabled: true }],
+        preRequestScript: 'bb.variables.set("pre", "1");',
+        postResponseScript: 'bb.test("ok", () => {});',
+      }, 'Demo Collection', 'Todos');
+
+      assert.strictEqual(savedReq.preRequestScript, 'bb.variables.set("pre", "1");');
+      assert.strictEqual(savedReq.postResponseScript, 'bb.test("ok", () => {});');
+      assert(fs.existsSync(diskStateFile), 'State file must be persisted to disk');
+
+      // Simulate Session 2: Opening VS Code in a brand new VS Code Profile or Empty Window
+      // (both workspaceState and globalState are completely empty in the new profile)
+      const emptyWsStore = new Map();
+      const emptyGlobalStore = new Map();
+      const ctxNewProfile = {
+        workspaceState: {
+          get: (k) => emptyWsStore.get(k),
+          update: (k, v) => { emptyWsStore.set(k, v); return Promise.resolve(); },
+        },
+        globalState: {
+          get: (k) => emptyGlobalStore.get(k),
+          update: (k, v) => { emptyGlobalStore.set(k, v); return Promise.resolve(); },
+          setKeysForSync: () => {},
+        },
+      };
+
+      const mgrNewProfile = new BlueByrdStateManager(ctxNewProfile, diskStateFile);
+      const loadedProfile = mgrNewProfile.getProfile('prof-custom');
+      assert(loadedProfile, 'Saved profile must persist when opening in a new VS Code profile or restarting');
+      assert.strictEqual(loadedProfile.auth.type, 'bearer');
+      assert.strictEqual(loadedProfile.auth.token, 'secret-jwt-123');
+      assert.strictEqual(loadedProfile.auth.selectedTokenId, 'tok-vault-99', 'selectedTokenId must be preserved by normalizeAuth');
+      assert.strictEqual(loadedProfile.variables.apiVersion, 'v2');
+
+      const foundReq = mgrNewProfile.getRequest('req-full-persist');
+      assert(foundReq && foundReq.request, 'Saved request must persist when opening in a new VS Code profile or restarting');
+      const loadedReq = foundReq.request;
+      assert.strictEqual(loadedReq.preRequestScript, 'bb.variables.set("pre", "1");');
+      assert.strictEqual(loadedReq.postResponseScript, 'bb.test("ok", () => {});');
+      assert.strictEqual(loadedReq.notes, 'Important request notes');
+      assert.strictEqual(loadedReq.bodyType, 'json');
+      assert.strictEqual(loadedReq.baseUrlPreference, 'collection');
+      assert.strictEqual(loadedReq.variables.length, 1);
+      assert.strictEqual(loadedReq.variables[0].name, 'localVar');
+
+      // Verify CollectionsTreeProvider preserves all request fields in reqContext when clicking a request in the sidebar
+      const colsProvider = new BlueByrdCollectionsTreeProvider(mgrNewProfile);
+      const colNodes = colsProvider.getChildren();
+      const demoColNode = colNodes.find(n => n.label === 'Demo Collection');
+      const folderNodes = colsProvider.getChildren(demoColNode);
+      const todosFolderNode = folderNodes.find(n => n.label === 'Todos');
+      const reqNodes = colsProvider.getChildren(todosFolderNode);
+      const fullReqNode = reqNodes.find(n => n.itemId === 'req-full-persist');
+      assert(fullReqNode && fullReqNode.requestContext, 'Request tree node must include requestContext');
+      assert.strictEqual(fullReqNode.requestContext.requestId, 'req-full-persist');
+      assert.strictEqual(fullReqNode.requestContext.notes, 'Important request notes');
+      assert.strictEqual(fullReqNode.requestContext.bodyType, 'json');
+      assert.strictEqual(fullReqNode.requestContext.preRequestScript, 'bb.variables.set("pre", "1");');
+      assert.strictEqual(fullReqNode.requestContext.postResponseScript, 'bb.test("ok", () => {});');
+      assert.strictEqual(fullReqNode.requestContext.baseUrlPreference, 'collection');
+      assert.strictEqual(fullReqNode.requestContext.variables.length, 1);
+
+      // Verify GlobalSettingsPanelHtml wires shared auth client script & extractAuthValues
+      const globalHtml = getGlobalSettingsPanelHtml(mgrNewProfile.getState(), [], 'profiles', 'prof-custom');
+      assert(globalHtml.includes('function extractAuthValues()'), 'Global settings HTML must include extractAuthValues() from sharedAuthHtml');
+      assert(globalHtml.includes('const auth = extractAuthValues();'), 'Global settings save handler must call extractAuthValues()');
+
+      // Verify legacy dev-token-sample is stripped and Collection/Request headers override lower-scope Profile Auth
+      const devProfileLoaded = mgrNewProfile.getProfile('profile-dev');
+      assert.strictEqual(devProfileLoaded.auth.type, 'none', 'Default Development profile must not have ghost dev-token-sample bearer auth');
+
+      mgrNewProfile.saveCollection({
+        id: 'col-jellyfin',
+        name: 'Jellyfin API v12.2.0',
+        folders: [],
+        requests: [],
+        headers: {
+          'Authorization': 'MediaBrowser Client="ByrdsNest", Device="Legion", DeviceId="byrdsnest-01"'
+        }
+      });
+
+      const varSvc = new VariableService(mgrNewProfile);
+      const authSvc = new AuthService(mgrNewProfile);
+
+      // Collection header (rank 2) must NOT be clobbered by Profile Auth (rank 1)
+      const colHierHeaders = varSvc.resolveHeadersDetailed(undefined, 'col-jellyfin', undefined, {}, 'prof-custom');
+      const finalColHeaders = authSvc.resolveAuthHeaders('prof-custom', undefined, 'col-jellyfin', undefined, colHierHeaders.merged);
+      assert.strictEqual(
+        finalColHeaders['Authorization'],
+        'MediaBrowser Client="ByrdsNest", Device="Legion", DeviceId="byrdsnest-01"',
+        'Collection Authorization header must override lower-scope Profile Bearer Auth'
+      );
+      const profAuthInherited = colHierHeaders.inherited.find(h => h.sourceName === 'Profile: Custom Persistent Profile (Auth)');
+      assert(profAuthInherited, 'Profile Auth must be surfaced in Inherited Headers inspector');
+      assert.strictEqual(profAuthInherited.isOverridden, true, 'Profile Auth must be marked isOverridden when Collection defines Authorization header');
+
+      // Request header override (rank 5) must NOT be clobbered by Profile Auth (rank 1)
+      const reqHierHeaders = varSvc.resolveHeaders(undefined, 'Demo Collection', undefined, { 'Authorization': 'CustomRequestOverride' }, 'prof-custom');
+      const finalReqHeaders = authSvc.resolveAuthHeaders('prof-custom', undefined, 'Demo Collection', undefined, reqHierHeaders);
+      assert.strictEqual(
+        finalReqHeaders['Authorization'],
+        'CustomRequestOverride',
+        'Request header override must override inherited Profile Auth'
+      );
+
+      // Verify collection.set() and bn.collection.set() in Pre-Request and Post-Response scripts
+      const scriptSvc = new ScriptService();
+      const preColRes = scriptSvc.executePreRequest(
+        `collection.set("colToken", "pre-col-123"); bn.collection.set("colSecond", collection.get("colToken") + "-ok");`,
+        {
+          url: 'http://localhost:8096/test',
+          method: 'GET',
+          headers: {},
+          environmentVariables: {},
+          collectionVariables: {},
+          resolvedVariables: {},
+        }
+      );
+      assert.strictEqual(preColRes.colMutations['colToken'], 'pre-col-123', 'collection.set() in Pre-Request must record colMutations');
+      assert.strictEqual(preColRes.colMutations['colSecond'], 'pre-col-123-ok', 'bn.collection.set() and collection.get() in Pre-Request must work');
+
+      const postColRes = scriptSvc.executePostResponse(
+        `collection.set("accessToken", bn.response.json().AccessToken); environment.set("envToken", response.json().AccessToken);`,
+        {
+          url: 'http://localhost:8096/Users/AuthenticateByName',
+          method: 'POST',
+          requestHeaders: {},
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          body: JSON.stringify({ AccessToken: 'a74922f0b3834ed8b94d435f46634031' }),
+          elapsedMs: 42,
+          environmentVariables: {},
+          collectionVariables: {},
+          resolvedVariables: {},
+        }
+      );
+      assert.strictEqual(postColRes.colMutations['accessToken'], 'a74922f0b3834ed8b94d435f46634031', 'collection.set() in Post-Response must record colMutations');
+      assert.strictEqual(postColRes.envMutations['envToken'], 'a74922f0b3834ed8b94d435f46634031', 'environment.set() in Post-Response must record envMutations');
+    } finally {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    }
+
+    console.log('✓ Cross-profile/restart persistence & full request/profile field preservation verified');
+  }
+
+  // 69. Test Full OpenAPI $ref Resolution, Auto-Populated Request Body/Variables, and Request Panel OpenAPI Docs UI
+  {
+    const { ImportExportService } = require(path.join(repoDist, 'services/importExportService'));
+    const { getRequestPanelHtml } = require(path.join(repoDist, 'views/panels/requestPanelHtml'));
+    const mgr = new BlueByrdStateManager(mockContext);
+    const ieService = new ImportExportService(mgr);
+
+    const richOpenApiSpec = {
+      openapi: '3.0.4',
+      info: {
+        title: 'Media Server API',
+        version: '12.2.0',
+        description: 'Comprehensive media server OpenAPI specification'
+      },
+      servers: [{ url: 'http://localhost:8096' }],
+      tags: [
+        { name: 'User', description: 'User authentication and profile management operations.' },
+        { name: 'InstantMix', description: 'Instant mix playlist generation endpoints.' }
+      ],
+      components: {
+        securitySchemes: {
+          CustomAuthentication: {
+            type: 'apiKey',
+            in: 'header',
+            name: 'Authorization',
+            description: 'Emby/Jellyfin MediaBrowser token authentication'
+          }
+        },
+        schemas: {
+          AuthenticateUserByName: {
+            type: 'object',
+            required: ['Username'],
+            properties: {
+              Username: {
+                type: 'string',
+                nullable: true,
+                description: 'Gets or sets the username.'
+              },
+              Pw: {
+                type: 'string',
+                nullable: true,
+                format: 'password',
+                description: 'Gets or sets the plain text password.'
+              },
+              ServerVersion: {
+                type: 'string',
+                readOnly: true,
+                description: 'Server-populated read-only field that should be omitted from request body examples.'
+              }
+            }
+          },
+          AuthenticationResult: {
+            type: 'object',
+            properties: {
+              AccessToken: {
+                type: 'string',
+                nullable: true,
+                description: 'Gets or sets the access token.'
+              },
+              ServerId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'Gets or sets the server id.'
+              }
+            }
+          },
+          ItemFields: {
+            type: 'string',
+            enum: ['AirTime', 'CanDelete', 'Overview', 'Path'],
+            description: 'Used to control the data that gets attached to DtoBaseItems.'
+          }
+        }
+      },
+      paths: {
+        '/Users/AuthenticateByName': {
+          post: {
+            tags: ['User'],
+            summary: 'Authenticates a user by name',
+            description: 'Authenticates a user by username and password and returns an AccessToken.',
+            operationId: 'AuthenticateUserByName',
+            requestBody: {
+              description: 'The AuthenticateUserByName request body.',
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    allOf: [
+                      { $ref: '#/components/schemas/AuthenticateUserByName' }
+                    ]
+                  }
+                }
+              }
+            },
+            responses: {
+              '200': {
+                description: 'User authenticated.',
+                headers: {
+                  'X-Emby-Authorization': {
+                    description: 'Session token header.',
+                    schema: { type: 'string' }
+                  }
+                },
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/AuthenticationResult' }
+                  }
+                }
+              },
+              '401': {
+                description: 'Unauthorized'
+              }
+            }
+          }
+        },
+        '/Albums/{itemId}/InstantMix': {
+          get: {
+            tags: ['InstantMix'],
+            summary: 'Creates an instant mix from a given album',
+            operationId: 'GetInstantMixFromAlbum',
+            deprecated: true,
+            security: [
+              { CustomAuthentication: ['DefaultAuthorization'] }
+            ],
+            parameters: [
+              {
+                name: 'itemId',
+                in: 'path',
+                required: true,
+                description: 'The album id.',
+                schema: { type: 'string', format: 'uuid' }
+              },
+              {
+                name: 'limit',
+                in: 'query',
+                required: false,
+                description: 'Optional. The maximum number of records to return.',
+                schema: { type: 'integer', format: 'int32', minimum: 1, maximum: 500, default: 50 }
+              },
+              {
+                name: 'fields',
+                in: 'query',
+                required: false,
+                description: 'Optional. Specify additional fields of information to return.',
+                schema: {
+                  type: 'array',
+                  items: { $ref: '#/components/schemas/ItemFields' }
+                }
+              }
+            ],
+            responses: {
+              '200': {
+                description: 'Instant mix created.'
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const parsedCol = ImportExportService.parseOpenApi(richOpenApiSpec);
+    assert.strictEqual(parsedCol.name, 'Media Server API v12.2.0');
+    assert.strictEqual(parsedCol.baseUrl, 'http://localhost:8096');
+    assert(parsedCol.auth && parsedCol.auth.auth && parsedCol.auth.auth.type === 'apiKey', 'Collection auth should be auto-configured from securitySchemes');
+
+    // Check folder tag notes
+    const userFolder = parsedCol.folders.find(f => f.name === 'User');
+    const mixFolder = parsedCol.folders.find(f => f.name === 'InstantMix');
+    assert(userFolder && userFolder.notes.includes('User authentication'), 'Folder notes should be populated from OpenAPI tag description');
+
+    // 1. Verify POST /Users/AuthenticateByName ($ref + allOf requestBody, readOnly exclusion, response schema & headers)
+    const authReq = userFolder.requests[0];
+    assert.strictEqual(authReq.method, 'POST');
+    assert.strictEqual(authReq.bodyType, 'json');
+    const parsedExampleBody = JSON.parse(authReq.body);
+    assert.strictEqual(parsedExampleBody.Username, 'string', 'Resolved $ref property Username should be in generated body');
+    assert.strictEqual(parsedExampleBody.Pw, 'string', 'Password property Pw should be in generated body');
+    assert.strictEqual(parsedExampleBody.ServerVersion, undefined, 'readOnly property should be omitted from generated requestBody example');
+
+    assert(authReq.openApiDocs, 'Request must contain structured openApiDocs');
+    assert.strictEqual(authReq.openApiDocs.operationId, 'AuthenticateUserByName');
+    assert(authReq.openApiDocs.requestBody, 'openApiDocs must include requestBody');
+    assert.strictEqual(authReq.openApiDocs.requestBody.schemaName, 'AuthenticateUserByName');
+    assert(authReq.openApiDocs.requestBody.properties.some(p => p.name === 'Username' && p.required === true), 'Username property doc must be marked required');
+    assert(authReq.openApiDocs.responses.length === 2, 'Must extract 200 and 401 responses');
+    const resp200 = authReq.openApiDocs.responses.find(r => r.status === '200');
+    assert.strictEqual(resp200.schemaName, 'AuthenticationResult');
+    assert(resp200.headers && resp200.headers.some(h => h.name === 'X-Emby-Authorization'), 'Must extract response headers');
+    assert(resp200.exampleJson && resp200.exampleJson.includes('AccessToken'), 'Must generate response example JSON from $ref');
+
+    // 2. Verify GET /Albums/{itemId}/InstantMix (path variable auto-population, clean URL without optional query bloat, enum extraction)
+    const mixReq = mixFolder.requests[0];
+    assert.strictEqual(mixReq.url, '{{baseUrl}}/Albums/{{itemId}}/InstantMix', 'Optional query params without explicit examples must not bloat the base URL');
+    assert(Array.isArray(mixReq.variables) && mixReq.variables.length === 1, 'Path parameter {itemId} must be auto-populated in request variables');
+    assert.strictEqual(mixReq.variables[0].name, 'itemId');
+    assert.strictEqual(mixReq.variables[0].value, '00000000-0000-0000-0000-000000000000', 'UUID path parameter should get UUID example value');
+
+    assert.strictEqual(mixReq.openApiDocs.deprecated, true, 'Deprecated flag must be captured');
+    assert.strictEqual(mixReq.openApiDocs.security[0].schemeName, 'CustomAuthentication');
+    assert.deepStrictEqual(mixReq.openApiDocs.security[0].scopes, ['DefaultAuthorization']);
+    const fieldsParam = mixReq.openApiDocs.parameters.find(p => p.name === 'fields');
+    assert(fieldsParam && Array.isArray(fieldsParam.enum), 'Array of $ref enum query param must extract enum');
+    assert(fieldsParam.enum.includes('Overview'), 'Enum values must include Overview');
+
+    // 3. Verify Request Panel HTML renders OpenAPI Docs & Schema view and interactive actions
+    const htmlWithOpenApi = getRequestPanelHtml({
+      requestId: authReq.id,
+      requestName: authReq.name,
+      method: authReq.method,
+      url: authReq.url,
+      headers: authReq.headers,
+      body: authReq.body,
+      bodyType: authReq.bodyType,
+      notes: authReq.notes,
+      openApiDocs: authReq.openApiDocs
+    }, mgr.getState());
+
+    assert(htmlWithOpenApi.includes('openapi-tab-pill'), 'Tab bar must show OpenAPI badge when openApiDocs is present');
+    assert(htmlWithOpenApi.includes('id="docs-view-openapi"'), 'Must render #docs-view-openapi container');
+    assert(htmlWithOpenApi.includes('id="btn-openapi-insert-body"'), 'Must render Insert Example into Body button in Docs tab');
+    assert(htmlWithOpenApi.includes('id="btn-insert-openapi-body"'), 'Must render ⚡ OpenAPI Example button in JSON Body editor toolbar');
+    assert(htmlWithOpenApi.includes('AuthenticateUserByName'), 'Must render schema name and operationId');
+    assert(htmlWithOpenApi.includes('X-Emby-Authorization'), 'Must render response header documentation');
+
+    const htmlMix = getRequestPanelHtml({
+      requestId: mixReq.id,
+      requestName: mixReq.name,
+      method: mixReq.method,
+      url: mixReq.url,
+      headers: mixReq.headers,
+      variables: mixReq.variables,
+      openApiDocs: mixReq.openApiDocs
+    }, mgr.getState());
+    assert(htmlMix.includes('DEPRECATED'), 'Must render DEPRECATED badge for deprecated operation');
+    assert(htmlMix.includes('data-openapi-action="add-query"'), 'Must render + Query button for query parameters');
+    assert(htmlMix.includes('data-openapi-action="add-query-var"'), 'Must render + {{Var}} button for query parameters');
+    assert(htmlMix.includes('data-openapi-action="add-path-var"'), 'Must render + Set {{Var}} button for path parameters');
+    assert(htmlMix.includes('data-param-enum="fields"'), 'Must render enum dropdown for enum query parameter');
+
+    // 4. Test real-world Jellyfin OpenAPI specification if present in .temp/jellyfin-openapi-stable.json
+    const jellyfinPath = path.join(__dirname, '..', '.temp', 'jellyfin-openapi-stable.json');
+    if (fs.existsSync(jellyfinPath)) {
+      const rawJellyfin = JSON.parse(fs.readFileSync(jellyfinPath, 'utf8'));
+      const jfCol = ImportExportService.parseOpenApi(rawJellyfin);
+      assert(jfCol.folders.length >= 30, 'Jellyfin spec should import 30+ tag folders');
+      const allJfReqs = jfCol.folders.flatMap(f => f.requests);
+      const jfAuthReq = allJfReqs.find(r => r.url.toLowerCase().includes('authenticatebyname') || (r.openApiDocs && r.openApiDocs.operationId === 'AuthenticateUserByName'));
+      assert(jfAuthReq, 'Jellyfin AuthenticateByName request must exist');
+      const jfAuthBody = JSON.parse(jfAuthReq.body);
+      assert('Username' in jfAuthBody && 'Pw' in jfAuthBody, 'Jellyfin AuthenticateByName body must auto-populate Username and Pw from $ref');
+
+      // Test stateManager persistence of openApiDocs
+      mgr.saveCollection(jfCol);
+      const reloadedReq = mgr.getRequest(jfAuthReq.id);
+      assert(reloadedReq && reloadedReq.request.openApiDocs, 'reloadedReq must preserve openApiDocs through stateManager.saveCollection and normalizeState');
+      assert.strictEqual(reloadedReq.request.openApiDocs.operationId, 'AuthenticateUserByName');
+    }
+
+    console.log('✓ OpenAPI $ref resolution, auto-populated body/variables, Request Panel OpenAPI Docs UI, and StateManager persistence verified');
+  }
+
+  // 70. Test Collection Base URL Port/Host Composition & Inline/Title Folder Creation
+  {
+    const mgr = new BlueByrdStateManager(mockContext);
+    const varSvc = new VariableService(mgr);
+
+    // 1. Create Environment "LocalHost" with baseUrl = "http://localhost"
+    mgr.saveEnvironment('LocalHost', {
+      id: 'env-localhost',
+      baseUrl: 'http://localhost',
+      variables: {}
+    });
+
+    // 2. Collection A (Jellyfin) with baseUrl = "{{baseUrl}}:8096"
+    mgr.saveCollection({
+      id: 'col-jellyfin-port',
+      name: 'Jellyfin Port Test',
+      baseUrl: '{{baseUrl}}:8096',
+      baseUrlPreference: 'collection',
+      folders: [],
+      requests: [
+        {
+          id: 'req-jf-auth',
+          name: 'Auth',
+          method: 'POST',
+          url: '{{baseUrl}}/Users/AuthenticateByName',
+          headers: {}
+        }
+      ]
+    });
+
+    // 3. Collection B (Plex) with baseUrl = "{{envBaseUrl}}:32400"
+    mgr.saveCollection({
+      id: 'col-plex-port',
+      name: 'Plex Port Test',
+      baseUrl: '{{envBaseUrl}}:32400',
+      baseUrlPreference: 'collection',
+      folders: [],
+      requests: [
+        {
+          id: 'req-plex-status',
+          name: 'Status',
+          method: 'GET',
+          url: '{{baseUrl}}/status',
+          headers: {}
+        }
+      ]
+    });
+
+    // 4. Collection C (Radarr) with shorthand ":7878"
+    mgr.saveCollection({
+      id: 'col-radarr-port',
+      name: 'Radarr Port Test',
+      baseUrl: ':7878',
+      baseUrlPreference: 'collection',
+      folders: [],
+      requests: []
+    });
+
+    // 5. Collection D with collection variable baseUrl = "{{baseUrl}}:9000"
+    mgr.saveCollection({
+      id: 'col-var-port',
+      name: 'Var Port Test',
+      baseUrlPreference: 'collection',
+      variables: {
+        baseUrl: '{{baseUrl}}:9000'
+      },
+      folders: [],
+      requests: []
+    });
+
+    // Verify Collection A resolves to http://localhost:8096
+    const resA = varSvc.resolveVariablesDetailed(undefined, 'LocalHost', 'col-jellyfin-port');
+    assert.strictEqual(resA.resolved['envBaseUrl'], 'http://localhost', 'envBaseUrl should be http://localhost');
+    assert.strictEqual(resA.resolved['collectionBaseUrl'], 'http://localhost:8096', 'collectionBaseUrl should compose with env baseUrl');
+    assert.strictEqual(resA.resolved['baseUrl'], 'http://localhost:8096', 'baseUrl should resolve to http://localhost:8096');
+
+    // Verify request URL interpolation
+    const interpolatedA = varSvc.interpolateRequest({
+      url: '{{baseUrl}}/Users/AuthenticateByName',
+      headers: {}
+    }, resA.resolved);
+    assert.strictEqual(interpolatedA.url, 'http://localhost:8096/Users/AuthenticateByName', 'Request URL must resolve to port 8096');
+
+    // Verify Collection B resolves to http://localhost:32400
+    const resB = varSvc.resolveVariablesDetailed(undefined, 'LocalHost', 'col-plex-port');
+    assert.strictEqual(resB.resolved['baseUrl'], 'http://localhost:32400', 'baseUrl with {{envBaseUrl}}:32400 should resolve cleanly');
+
+    // Verify Collection C shorthand :7878 resolves to http://localhost:7878
+    const resC = varSvc.resolveVariablesDetailed(undefined, 'LocalHost', 'col-radarr-port');
+    assert.strictEqual(resC.resolved['baseUrl'], 'http://localhost:7878', 'baseUrl with shorthand :7878 should prepend env baseUrl');
+
+    // Verify Collection D variable baseUrl = "{{baseUrl}}:9000" resolves to http://localhost:9000 without circular recursion
+    const resD = varSvc.resolveVariablesDetailed(undefined, 'LocalHost', 'col-var-port');
+    assert.strictEqual(resD.resolved['baseUrl'], 'http://localhost:9000', 'Collection variable baseUrl should resolve without recursion');
+
+    // 6. Test switching environment from LocalHost to NAS (http://192.168.1.100)
+    mgr.saveEnvironment('NAS', {
+      id: 'env-nas',
+      baseUrl: 'http://192.168.1.100',
+      variables: {}
+    });
+    const resNasA = varSvc.resolveVariablesDetailed(undefined, 'NAS', 'col-jellyfin-port');
+    assert.strictEqual(resNasA.resolved['baseUrl'], 'http://192.168.1.100:8096', 'Switching environment to NAS must update Jellyfin to NAS:8096');
+    const resNasB = varSvc.resolveVariablesDetailed(undefined, 'NAS', 'col-plex-port');
+    assert.strictEqual(resNasB.resolved['baseUrl'], 'http://192.168.1.100:32400', 'Switching environment to NAS must update Plex to NAS:32400');
+
+    // 7. Verify package.json menu definitions expose createFolder in view/title and view/item/context
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const titleMenus = pkg.contributes.menus['view/title'];
+    const folderTitleMenu = titleMenus.find(m => m.command === 'byrdsnestApiClient.createFolder');
+    assert(folderTitleMenu, 'package.json view/title must include byrdsnestApiClient.createFolder');
+    assert(folderTitleMenu.when.includes('byrdsnestCollections'), 'Folder title menu must apply to byrdsnestCollections');
+
+    const itemMenus = pkg.contributes.menus['view/item/context'];
+    const inlineFolderMenu = itemMenus.find(m => m.command === 'byrdsnestApiClient.createFolder' && m.group === 'inline@2');
+    assert(inlineFolderMenu, 'package.json view/item/context must include inline@2 createFolder');
+    assert(inlineFolderMenu.when.includes('byrdsnest.collection') && inlineFolderMenu.when.includes('byrdsnest.folder'), 'inline@2 createFolder must apply to both collections and folders');
+
+    // 8. Verify StateManager folder creation inside collection
+    const createdFolder = mgr.createFolder('col-jellyfin-port', 'Media Management');
+    assert(createdFolder, 'Must create folder in collection');
+    const refreshedCol = mgr.getCollection('col-jellyfin-port');
+    assert(refreshedCol.folders.some(f => f.name === 'Media Management'), 'Collection must contain newly created folder');
+
+    console.log('✓ Collection Base URL port/host composition & folder creation options verified');
+  }
+
+  console.log('\nAll 70 verification test suites passed successfully! 🎉');
   process.exit(0);
 })().catch(err => {
   console.error('Async test suite failure:', err);

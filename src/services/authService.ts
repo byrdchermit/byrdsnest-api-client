@@ -32,7 +32,73 @@ export class AuthService {
       ? collection.folders.find((f) => f.id === folderNameOrId || f.name === folderNameOrId)
       : undefined;
 
-    const applyAuth = (auth?: ProfileAuth) => {
+    const globalProfile = this.stateManager.getProfile('global');
+
+    const findCaseInsensitiveKey = (obj: Record<string, string> | undefined, targetKey: string): string | undefined => {
+      if (!obj) return undefined;
+      const lower = targetKey.toLowerCase();
+      return Object.keys(obj).find((k) => k.toLowerCase() === lower);
+    };
+
+    // Scope ranks: 0 = global, 1 = profile, 2 = collection, 3 = folder, 4 = environment, 5 = request
+    const canApplyAuthHeader = (headerName: string, authScopeRank: number): boolean => {
+      if (authScopeRank >= 5) {
+        return true;
+      }
+
+      // Check if any strictly higher scope explicitly defines this header in its .headers
+      if (authScopeRank < 2 && findCaseInsensitiveKey(collection?.headers, headerName)) {
+        return false;
+      }
+      if (authScopeRank < 3 && findCaseInsensitiveKey(folder?.headers, headerName)) {
+        return false;
+      }
+      if (authScopeRank < 4 && findCaseInsensitiveKey(environment?.headers, headerName)) {
+        return false;
+      }
+
+      // Check if existingHeaders already contains this header from a higher scope (e.g. Request headers override)
+      const existingKey = findCaseInsensitiveKey(merged, headerName);
+      if (existingKey !== undefined) {
+        let lowerScopeVal: string | undefined;
+        const gKey = findCaseInsensitiveKey(globalProfile?.headers, headerName);
+        if (gKey !== undefined) lowerScopeVal = globalProfile!.headers![gKey];
+        if (authScopeRank >= 1) {
+          const pKey = findCaseInsensitiveKey(profile?.headers, headerName);
+          if (pKey !== undefined) lowerScopeVal = profile!.headers![pKey];
+        }
+        if (authScopeRank >= 2) {
+          const cKey = findCaseInsensitiveKey(collection?.headers, headerName);
+          if (cKey !== undefined) lowerScopeVal = collection!.headers![cKey];
+        }
+        if (authScopeRank >= 3) {
+          const fKey = findCaseInsensitiveKey(folder?.headers, headerName);
+          if (fKey !== undefined) lowerScopeVal = folder!.headers![fKey];
+        }
+        if (authScopeRank >= 4) {
+          const eKey = findCaseInsensitiveKey(environment?.headers, headerName);
+          if (eKey !== undefined) lowerScopeVal = environment!.headers![eKey];
+        }
+        if (lowerScopeVal === undefined || merged[existingKey] !== lowerScopeVal) {
+          return false;
+        }
+      }
+
+      return true;
+    };
+
+    const setMergedHeader = (headerName: string, value: string, authScopeRank: number) => {
+      if (!canApplyAuthHeader(headerName, authScopeRank)) {
+        return;
+      }
+      const existingKey = findCaseInsensitiveKey(merged, headerName);
+      if (existingKey && existingKey !== headerName) {
+        delete merged[existingKey];
+      }
+      merged[headerName] = value;
+    };
+
+    const applyAuth = (auth: ProfileAuth | undefined, authScopeRank: number) => {
       if (!auth || auth.type === 'none') {
         return;
       }
@@ -57,26 +123,26 @@ export class AuthService {
         if (!tokenValue) return;
         const header = auth.headerName?.trim() || 'Authorization';
         const prefix = auth.headerPrefix !== undefined && auth.headerPrefix !== '' ? auth.headerPrefix.trim() : 'Bearer';
-        merged[header] = prefix ? `${prefix} ${tokenValue}` : tokenValue;
+        setMergedHeader(header, prefix ? `${prefix} ${tokenValue}` : tokenValue, authScopeRank);
       } else if (auth.type === 'apiKey') {
         const tokenValue = auth.token?.trim() ?? '';
         if (!tokenValue) return;
         const header = (auth.headerName && auth.headerName !== 'Authorization' ? auth.headerName.trim() : undefined) || auth.keyName?.trim() || auth.headerName?.trim() || 'X-API-Key';
-        merged[header] = tokenValue;
+        setMergedHeader(header, tokenValue, authScopeRank);
       } else if (auth.type === 'basic') {
         const header = auth.headerName?.trim() || 'Authorization';
         const user = auth.username ?? '';
         const pass = auth.password ?? auth.token ?? '';
         if (user || pass) {
           const encoded = Buffer.from(`${user}:${pass}`).toString('base64');
-          merged[header] = `Basic ${encoded}`;
+          setMergedHeader(header, `Basic ${encoded}`, authScopeRank);
         }
       }
     };
 
     // Check request-level override
     if (requestAuth?.auth && requestAuth.auth.type !== 'none') {
-      applyAuth(requestAuth.auth);
+      applyAuth(requestAuth.auth, 5);
       return merged;
     }
 
@@ -90,7 +156,7 @@ export class AuthService {
     const folderAuthObj = (folder?.auth as any)?.auth || (folder?.auth as any);
     const folderInheritsCollection = (folder?.auth as any)?.inheritFromCollection !== false;
     if (inheritFolder && folderAuthObj && folderAuthObj.type && folderAuthObj.type !== 'none') {
-      applyAuth(folderAuthObj);
+      applyAuth(folderAuthObj, 3);
       return merged;
     }
 
@@ -98,33 +164,32 @@ export class AuthService {
     const colAuthObj = (collection?.auth as any)?.auth || (collection?.auth as any);
     const allowCollection = inheritCollection && (folder ? folderInheritsCollection : true);
     if (allowCollection && colAuthObj && colAuthObj.type && colAuthObj.type !== 'none') {
-      applyAuth(colAuthObj);
+      applyAuth(colAuthObj, 2);
       return merged;
     }
 
     // 3. Environment level
     if (inheritEnvironment && environment?.auth && environment.auth.type !== 'none') {
-      applyAuth(environment.auth);
+      applyAuth(environment.auth, 4);
       return merged;
     }
 
     // 4. Profile level
     if (inheritProfile && profile?.auth && profile.auth.type !== 'none') {
-      applyAuth(profile.auth);
+      applyAuth(profile.auth, 1);
       return merged;
     }
 
     // 5. Shared / Global fallback
     const globalAuth = (this.stateManager as any).getSharedGlobalAuth ? (this.stateManager as any).getSharedGlobalAuth() : undefined;
     if (inheritProfile && globalAuth && globalAuth.type && globalAuth.type !== 'none') {
-      applyAuth(globalAuth);
+      applyAuth(globalAuth, 0);
       return merged;
     }
 
     if (inheritProfile) {
-      const globalProfile = this.stateManager.getProfile('global');
       if (globalProfile?.auth && globalProfile.auth.type !== 'none') {
-        applyAuth(globalProfile.auth);
+        applyAuth(globalProfile.auth, 0);
         return merged;
       }
     }

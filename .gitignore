@@ -432,3 +432,5 @@ dist/
 *.msix
 *.msm
 *.msp
+
+.temp/

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] - 2026-10-14
+
+### Added
+- **Interactive OpenAPI 3.0 / 3.1 & Swagger 2.0 Reference in Request Panel**:
+  - Full `$ref` schema resolution for request bodies, path parameters, query parameters, headers, and responses across complex OpenAPI specifications.
+  - Dedicated **Docs & Notes [OpenAPI]** tab with a high-fidelity interactive reference browser:
+    - Parameter cards with data types, format annotations (`uuid`, `date-time`, etc.), required badges, deprecation warnings, and interactive enum dropdown pickers.
+    - One-click insertion buttons: `+ Query` (appends parameter to URL), `+ {{Var}}` (appends variable-templated parameter), `+ Set {{Var}}` (sets path variable in request), and `+ Header`.
+    - Auto-generated request body examples with `⚡ OpenAPI Example` and `Copy Example` buttons.
+    - Status code response documentation (`200 OK`, `401 Unauthorized`, etc.) including header tables and response model schemas.
+- **Environment & Collection Base URL Composition**:
+  - Seamlessly compose underlying environment host URLs (e.g. `http://localhost`) with collection or folder ports and paths (`{{baseUrl}}:8096`, `{{envBaseUrl}}:8096`, or `:8096`) without circular reference loops.
+- **Inline Folder Creation in Collections View**:
+  - Added `New Folder` command (`$(new-folder)`) directly in the Collections view title bar (`navigation@2`) and inline context actions on both collections and folders (`inline@2`).
+  - Automatically targets selected collections or parent folders.
+
+### Fixed
+- **OpenAPI Schema Persistence**:
+  - Fixed `BlueByrdStateManager.normalizeState()` to reliably preserve `openApiDocs` across folder and root request mappings during save and reload cycles.
+- **Consistent Tab Presentation**:
+  - Standardized tab labeling to `Docs & Notes` across all requests, displaying the `OpenAPI` pill badge when OpenAPI documentation is attached and a helpful explainer for manual requests.
+
+---
+
 ## [0.3.9] - 2026-10-05
 
 ### Added

@@ -132,6 +132,7 @@ export class ScriptService {
     const bbContext = {
       request: reqObj,
       environment: envStore,
+      collection: colStore,
       collectionVariables: colStore,
       variables: varStore,
       info: {
@@ -146,6 +147,7 @@ export class ScriptService {
     sandbox.pm = bbContext;
     sandbox.request = reqObj;
     sandbox.environment = envStore;
+    sandbox.collection = colStore;
     sandbox.collectionVariables = colStore;
     sandbox.variables = varStore;
 
@@ -322,6 +324,7 @@ export class ScriptService {
       request: reqObj,
       response: respObj,
       environment: envStore,
+      collection: colStore,
       collectionVariables: colStore,
       variables: varStore,
       test: testFn,
@@ -341,6 +344,7 @@ export class ScriptService {
     sandbox.response = respObj;
     sandbox.request = reqObj;
     sandbox.environment = envStore;
+    sandbox.collection = colStore;
     sandbox.collectionVariables = colStore;
     sandbox.variables = varStore;
 

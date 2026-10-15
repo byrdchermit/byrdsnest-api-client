@@ -23,7 +23,7 @@ export class BlueByrdPanel {
   private readonly variableService: VariableService;
   private readonly authService: AuthService;
   private readonly tokenService?: TokenService;
-  private readonly panelKey: string;
+  private panelKey: string;
   private disposables: vscode.Disposable[] = [];
   private baseTitle: string = 'New Request';
   private isDirty: boolean = false;
@@ -53,7 +53,45 @@ export class BlueByrdPanel {
       return;
     }
 
-    const title = initialContext?.requestName || (initialContext?.method && initialContext?.url ? `${initialContext.method} ${initialContext.url}` : 'New Request');
+    // Hydrate with latest saved request state if requestId exists in stateManager
+    let hydratedContext: RequestContext = { ...(initialContext || {}) };
+    const currentState = stateManager.getState();
+    if (requestId) {
+      const found = stateManager.getRequest(requestId);
+      if (found) {
+        const { request: savedReq, collection: savedCol, folder: savedFolder } = found;
+        hydratedContext = {
+          ...hydratedContext,
+          id: savedReq.id,
+          requestId: savedReq.id,
+          requestName: savedReq.name || hydratedContext.requestName,
+          method: savedReq.method || hydratedContext.method,
+          url: savedReq.url ?? hydratedContext.url,
+          collection: savedCol.name || savedReq.collection || hydratedContext.collection,
+          collectionId: savedCol.id || savedReq.collectionId || hydratedContext.collectionId,
+          folder: savedFolder?.name ?? savedReq.folder ?? hydratedContext.folder,
+          folderId: savedFolder?.id ?? savedReq.folderId ?? hydratedContext.folderId,
+          headers: savedReq.headers || hydratedContext.headers,
+          body: savedReq.body ?? hydratedContext.body,
+          bodyType: savedReq.bodyType ?? hydratedContext.bodyType,
+          bodyFormData: savedReq.bodyFormData ?? hydratedContext.bodyFormData,
+          profile: undefined,
+          profileId: undefined,
+          environment: currentState.activeEnvironmentName !== undefined
+            ? currentState.activeEnvironmentName
+            : (savedReq.environment !== undefined ? savedReq.environment : hydratedContext.environment),
+          auth: savedReq.auth ?? hydratedContext.auth,
+          notes: savedReq.notes ?? hydratedContext.notes,
+          variables: savedReq.variables ?? hydratedContext.variables,
+          preRequestScript: savedReq.preRequestScript ?? hydratedContext.preRequestScript,
+          postResponseScript: savedReq.postResponseScript ?? hydratedContext.postResponseScript,
+          baseUrlPreference: savedReq.baseUrlPreference ?? hydratedContext.baseUrlPreference,
+          openApiDocs: savedReq.openApiDocs ?? hydratedContext.openApiDocs,
+        };
+      }
+    }
+
+    const title = hydratedContext?.requestName || (hydratedContext?.method && hydratedContext?.url ? `${hydratedContext.method} ${hydratedContext.url}` : 'New Request');
 
     const panel = vscode.window.createWebviewPanel(
       BlueByrdPanel.viewType,
@@ -69,7 +107,7 @@ export class BlueByrdPanel {
     const instance = new BlueByrdPanel(
       panel,
       extensionUri,
-      initialContext || {},
+      hydratedContext,
       stateManager,
       httpService,
       variableService,
@@ -130,6 +168,7 @@ export class BlueByrdPanel {
         id: pr.id,
         name: pr.name,
         color: pr.color,
+        guards: pr.guards,
       }));
 
       this.panel.webview.postMessage({
@@ -198,13 +237,13 @@ export class BlueByrdPanel {
 
     // Pre-calculate initial inherited variables and headers for inspector
     const state = this.stateManager.getState();
-    const envKeys = Object.keys(state.environments);
-    const initialEnv = initialContext?.environment || state.activeEnvironmentName || envKeys[0];
+    const initialEnv = state.activeEnvironmentName || initialContext?.environment || '';
+    initialContext.environment = initialEnv;
     const initialCol = initialContext?.collection || state.collections[0]?.name;
     const initialFolder = initialContext?.folder && initialContext.folder !== 'Root' ? initialContext.folder : undefined;
     const initialVars = initialContext?.variables || [];
     const initialHeaders = initialContext?.headers || {};
-    const initialProfile = initialContext?.profileId || initialContext?.profile || (state.activeProfileId !== 'all' ? state.activeProfileId : undefined) || state.profiles[0]?.id;
+    const initialProfile = state.activeProfileId && state.activeProfileId !== 'all' ? state.activeProfileId : undefined;
 
     const varDetails = this.variableService.resolveVariablesDetailed(
       initialProfile,
@@ -274,9 +313,9 @@ export class BlueByrdPanel {
           } else if (message.type === 'sendRequest') {
             const payload = message.payload;
 
-            // Check Safety Guards for active/assigned Profile
-            const profileKey = payload.profileId || payload.profile || this.stateManager.getActiveProfileId();
-            const profile = profileKey ? this.stateManager.getProfile(profileKey) : undefined;
+            // Check Safety Guards for active workspace Profile
+            const profileKey = this.stateManager.getActiveProfileId();
+            const profile = profileKey && profileKey !== 'all' ? this.stateManager.getProfile(profileKey) : undefined;
             if (profile?.guards?.enabled) {
               const method = (payload.method || 'GET').toUpperCase();
               const blocked = (profile.guards.blockedMethods || []).map((m: string) => m.toUpperCase());
@@ -323,7 +362,10 @@ export class BlueByrdPanel {
             this.activeAbortController = abortController;
 
             try {
-              const meta = await this.httpService.executeRequest(payload, abortController.signal);
+              const meta = await this.httpService.executeRequest(
+                { ...payload, profile: undefined, profileId: profile?.id },
+                abortController.signal
+              );
               this.panel.webview.postMessage({ type: 'requestResult', meta });
               // Refresh explorer so history node updates
               vscode.commands.executeCommand('byrdsnestApiClient.refreshExplorer');
@@ -347,7 +389,6 @@ export class BlueByrdPanel {
               body: payload.body || '',
               bodyType: payload.bodyType,
               bodyFormData: payload.bodyFormData,
-              profile: payload.profile,
               environment: payload.environment,
               baseUrlPreference: payload.baseUrlPreference,
               auth: payload.auth,
@@ -355,9 +396,17 @@ export class BlueByrdPanel {
               variables: payload.variables,
               preRequestScript: payload.preRequestScript,
               postResponseScript: payload.postResponseScript,
+              openApiDocs: payload.openApiDocs ?? this.initialContext?.openApiDocs,
             };
 
             const saved = this.stateManager.saveRequest(savedItem, payload.collection, payload.folder);
+
+            // Re-key panels map if this was a newly created request
+            if (this.panelKey !== saved.id) {
+              BlueByrdPanel.panels.delete(this.panelKey);
+              this.panelKey = saved.id;
+              BlueByrdPanel.panels.set(saved.id, this);
+            }
 
             // Update panel title and internal context
             this.baseTitle = saved.name;
@@ -394,8 +443,10 @@ export class BlueByrdPanel {
             }
           } else if (message.type === 'getInherited') {
             const payload = message.payload;
+            const activeProfileId = this.stateManager.getActiveProfileId();
+            const resolvedProfileId = activeProfileId && activeProfileId !== 'all' ? activeProfileId : undefined;
             const varDetails = this.variableService.resolveVariablesDetailed(
-              payload.profileId || payload.profile,
+              resolvedProfileId,
               payload.environment,
               payload.collection,
               payload.folder,
@@ -407,7 +458,7 @@ export class BlueByrdPanel {
               payload.collection,
               payload.folder,
               payload.headers || {},
-              payload.profileId || payload.profile
+              resolvedProfileId
             );
             this.panel.webview.postMessage({
               type: 'updateInherited',
@@ -417,8 +468,10 @@ export class BlueByrdPanel {
             });
           } else if (message.type === 'previewRequest') {
             const payload = message.payload;
+            const activeProfileId = this.stateManager.getActiveProfileId();
+            const resolvedProfileId = activeProfileId && activeProfileId !== 'all' ? activeProfileId : undefined;
             const vars = this.variableService.resolveVariables(
-              payload.profileId || payload.profile,
+              resolvedProfileId,
               payload.environment,
               payload.collection,
               payload.folder,
@@ -430,10 +483,10 @@ export class BlueByrdPanel {
               payload.collection,
               payload.folder,
               payload.headers || {},
-              payload.profileId || payload.profile
+              resolvedProfileId
             );
             const authHeaders = this.authService.resolveAuthHeaders(
-              payload.profileId || payload.profile,
+              resolvedProfileId,
               payload.environment,
               payload.collection,
               payload.folder,
@@ -471,8 +524,10 @@ export class BlueByrdPanel {
             });
           } else if (message.type === 'copyCurl') {
             const payload = message.payload;
+            const activeProfileId = this.stateManager.getActiveProfileId();
+            const resolvedProfileId = activeProfileId && activeProfileId !== 'all' ? activeProfileId : undefined;
             const vars = this.variableService.resolveVariables(
-              payload.profileId || payload.profile,
+              resolvedProfileId,
               payload.environment,
               payload.collection,
               payload.folder,
@@ -484,10 +539,10 @@ export class BlueByrdPanel {
               payload.collection,
               payload.folder,
               payload.headers || {},
-              payload.profileId || payload.profile
+              resolvedProfileId
             );
             const authHeaders = this.authService.resolveAuthHeaders(
-              payload.profileId || payload.profile,
+              resolvedProfileId,
               payload.environment,
               payload.collection,
               payload.folder,

@@ -534,10 +534,10 @@ export function getSettingsPanelHtml(
             class="env-url-input"
             type="text"
             value="${escapeHtml((item as any)?.baseUrl || (item as any)?.variables?.['baseUrl'] || '')}"
-            placeholder="e.g. https://api.example.com or http://localhost:8980"
+            placeholder="e.g. https://api.example.com, or {{baseUrl}}:8096 to inherit environment host"
             ${(item as any)?.baseUrlDisabled === true ? 'disabled style="opacity: 0.55; text-decoration: line-through;"' : ''}
           />
-          <span id="col-base-url-hint" class="help-hint">${(item as any)?.baseUrlDisabled === true ? 'Base URL is currently disabled for this collection' : 'Dedicated Base URL for all requests in this collection'}</span>
+          <span id="col-base-url-hint" class="help-hint">${(item as any)?.baseUrlDisabled === true ? 'Base URL is currently disabled for this collection' : 'Dedicated Base URL for all requests in this collection (supports {{baseUrl}}:port or {{envBaseUrl}}:port)'}</span>
         </div>
         <div style="flex: 1.5; min-width: 220px;">
           <label for="col-base-url-pref">Base URL Priority</label>

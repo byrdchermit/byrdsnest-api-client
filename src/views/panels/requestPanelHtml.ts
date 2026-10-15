@@ -1,4 +1,12 @@
-import { AppState, EnvironmentConfig, InheritedHeaderInfo, InheritedVariableInfo, RequestContext, StoredToken } from '../../types';
+import {
+  AppState,
+  EnvironmentConfig,
+  InheritedHeaderInfo,
+  InheritedVariableInfo,
+  OpenApiOperationDocs,
+  RequestContext,
+  StoredToken,
+} from '../../types';
 import { renderAuthCss, renderAuthFieldsHtml, getSharedAuthClientScript } from './sharedAuthHtml';
 
 function escapeHtml(str: unknown): string {
@@ -11,6 +19,321 @@ function escapeHtml(str: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
+function renderOpenApiDocsHtml(docs: OpenApiOperationDocs | undefined): string {
+  if (!docs) return '';
+
+  const methodUpper = (docs.method || 'GET').toUpperCase();
+  const methodClass = `openapi-method-${methodUpper.toLowerCase()}`;
+
+  const securityHtml =
+    docs.security && docs.security.length > 0
+      ? `<div class="openapi-security-bar">
+          <span class="openapi-sec-label">🔒 Auth:</span>
+          ${docs.security
+            .map((sec) => {
+              const details: string[] = [];
+              if (sec.type) details.push(sec.type);
+              if (sec.in && sec.paramName) details.push(`${sec.in}: "${sec.paramName}"`);
+              const detailStr = details.length > 0 ? ` (${details.join(', ')})` : '';
+              const scopesHtml =
+                sec.scopes && sec.scopes.length > 0
+                  ? sec.scopes
+                      .map((s) => `<span class="openapi-scope-pill" title="Required policy / scope">${escapeHtml(s)}</span>`)
+                      .join('')
+                  : '';
+              return `<span class="openapi-sec-chip" title="${escapeHtml(sec.description || sec.schemeName)}">
+                <strong>${escapeHtml(sec.schemeName)}</strong>${escapeHtml(detailStr)}
+                ${scopesHtml}
+              </span>`;
+            })
+            .join('')}
+        </div>`
+      : '';
+
+  const paramsList = docs.parameters || [];
+  const paramsHtml =
+    paramsList.length > 0
+      ? `<div class="openapi-section">
+          <div class="openapi-section-header">
+            <span class="openapi-section-title">Parameters <span class="meta-tag">${paramsList.length}</span></span>
+            ${
+              paramsList.length > 4
+                ? `<input type="text" id="openapi-param-filter" class="openapi-filter-input" placeholder="Filter ${paramsList.length} parameters..." />`
+                : ''
+            }
+          </div>
+          <div class="openapi-params-list" id="openapi-params-list">
+            ${paramsList
+              .map((p, idx) => {
+                const loc = (p.in || 'query').toLowerCase();
+                const defaultOrEx = p.example ?? p.defaultValue ?? (p.enum && p.enum.length > 0 ? p.enum[0] : '');
+                const enumSelectId = `openapi-enum-${idx}`;
+                const enumHtml =
+                  p.enum && p.enum.length > 0
+                    ? `<div class="openapi-enum-row">
+                        <span class="openapi-enum-label">Allowed values:</span>
+                        <select id="${enumSelectId}" class="openapi-enum-select" data-param-enum="${escapeHtml(p.name)}">
+                          ${p.enum
+                            .map(
+                              (val) =>
+                                `<option value="${escapeHtml(val)}" ${val === defaultOrEx ? 'selected' : ''}>${escapeHtml(val)}</option>`
+                            )
+                            .join('')}
+                        </select>
+                      </div>`
+                    : '';
+
+                let actionsHtml = '';
+                if (loc === 'query') {
+                  actionsHtml = `
+                    <button type="button" class="btn btn-secondary openapi-action-btn" data-openapi-action="add-query" data-param-name="${escapeHtml(p.name)}" data-param-val="${escapeHtml(defaultOrEx)}" data-enum-select="${p.enum && p.enum.length > 0 ? enumSelectId : ''}" title="Add or update ?${escapeHtml(p.name)}=... in the Request URL">+ Query</button>
+                    <button type="button" class="btn btn-secondary openapi-action-btn" data-openapi-action="add-query-var" data-param-name="${escapeHtml(p.name)}" data-param-val="${escapeHtml(defaultOrEx || p.name)}" data-enum-select="${p.enum && p.enum.length > 0 ? enumSelectId : ''}" title="Add ?${escapeHtml(p.name)}={{${escapeHtml(p.name)}}} to URL and define {{${escapeHtml(p.name)}}} in Request Variables">+ {{Var}}</button>
+                  `;
+                } else if (loc === 'path') {
+                  actionsHtml = `
+                    <button type="button" class="btn btn-secondary openapi-action-btn" data-openapi-action="add-path-var" data-param-name="${escapeHtml(p.name)}" data-param-val="${escapeHtml(defaultOrEx || '1')}" data-enum-select="${p.enum && p.enum.length > 0 ? enumSelectId : ''}" title="Set {{${escapeHtml(p.name)}}} in Request Variables">+ Set {{Var}}</button>
+                  `;
+                } else if (loc === 'header') {
+                  actionsHtml = `
+                    <button type="button" class="btn btn-secondary openapi-action-btn" data-openapi-action="add-header" data-param-name="${escapeHtml(p.name)}" data-param-val="${escapeHtml(defaultOrEx)}" data-enum-select="${p.enum && p.enum.length > 0 ? enumSelectId : ''}" title="Add ${escapeHtml(p.name)} to Request Headers">+ Header</button>
+                  `;
+                }
+
+                return `<div class="openapi-param-card" data-param-search="${escapeHtml((p.name + ' ' + (p.description || '') + ' ' + p.type).toLowerCase())}">
+                  <div class="openapi-param-top">
+                    <div class="openapi-param-ident">
+                      <code class="openapi-param-name">${escapeHtml(p.name)}</code>
+                      <span class="openapi-loc-badge loc-${escapeHtml(loc)}">${escapeHtml(loc)}</span>
+                      <span class="openapi-type-badge">${escapeHtml(p.type)}${p.format ? ` (${escapeHtml(p.format)})` : ''}</span>
+                      ${p.required ? '<span class="openapi-req-badge">required</span>' : '<span class="openapi-opt-badge">optional</span>'}
+                      ${p.nullable ? '<span class="openapi-opt-badge">nullable</span>' : ''}
+                      ${p.deprecated ? '<span class="openapi-dep-badge">deprecated</span>' : ''}
+                      ${p.defaultValue !== undefined ? `<span class="openapi-def-badge" title="Default value">default: ${escapeHtml(p.defaultValue)}</span>` : ''}
+                    </div>
+                    <div class="openapi-param-actions">
+                      ${actionsHtml}
+                    </div>
+                  </div>
+                  ${p.description ? `<div class="openapi-param-desc">${escapeHtml(p.description)}</div>` : ''}
+                  ${enumHtml}
+                </div>`;
+              })
+              .join('')}
+          </div>
+        </div>`
+      : '';
+
+  const rb = docs.requestBody;
+  const requestBodyHtml = rb
+    ? `<div class="openapi-section">
+        <div class="openapi-section-header">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span class="openapi-section-title">Request Body</span>
+            <span class="body-mime-badge">${escapeHtml(rb.contentType)}</span>
+            ${rb.schemaName ? `<span class="openapi-schema-badge" title="OpenAPI Schema">${escapeHtml(rb.schemaName)}</span>` : ''}
+            ${rb.required ? '<span class="openapi-req-badge">required</span>' : ''}
+          </div>
+          ${
+            rb.exampleJson
+              ? `<button type="button" id="btn-openapi-insert-body" class="btn btn-secondary openapi-action-btn" style="border-color: rgba(78, 201, 176, 0.45); color: #4ec9b0;" title="Insert this schema example into the Request Body tab">⚡ Insert Example into Body</button>`
+              : ''
+          }
+        </div>
+        ${rb.description ? `<div class="openapi-body-desc">${escapeHtml(rb.description)}</div>` : ''}
+        ${
+          rb.properties && rb.properties.length > 0
+            ? `<div class="openapi-props-table-wrap">
+                <table class="openapi-props-table">
+                  <thead>
+                    <tr>
+                      <th>Field</th>
+                      <th>Type</th>
+                      <th>Attributes</th>
+                      <th>Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${rb.properties
+                      .map((prop) => {
+                        const flags: string[] = [];
+                        if (prop.required) flags.push('<span class="openapi-req-badge">required</span>');
+                        if (prop.nullable) flags.push('<span class="openapi-opt-badge">nullable</span>');
+                        if (prop.readOnly) flags.push('<span class="openapi-opt-badge">readOnly</span>');
+                        if (prop.deprecated) flags.push('<span class="openapi-dep-badge">deprecated</span>');
+                        if (prop.defaultValue !== undefined) flags.push(`<span class="openapi-def-badge">default: ${escapeHtml(prop.defaultValue)}</span>`);
+                        const enumInfo =
+                          prop.enum && prop.enum.length > 0
+                            ? `<div class="openapi-prop-enums">Enum: ${prop.enum.map((e) => `<code>${escapeHtml(e)}</code>`).join(', ')}</div>`
+                            : '';
+                        return `<tr>
+                          <td><code class="openapi-prop-name">${escapeHtml(prop.name)}</code></td>
+                          <td><span class="openapi-type-badge">${escapeHtml(prop.type)}${prop.format ? ` (${escapeHtml(prop.format)})` : ''}</span></td>
+                          <td><div style="display:flex; gap:4px; flex-wrap:wrap;">${flags.join('') || '<span style="color:var(--muted); font-size:10px;">—</span>'}</div></td>
+                          <td>${escapeHtml(prop.description || '')}${enumInfo}</td>
+                        </tr>`;
+                      })
+                      .join('')}
+                  </tbody>
+                </table>
+              </div>`
+            : ''
+        }
+        ${
+          rb.exampleJson
+            ? `<details class="openapi-details" open>
+                <summary>Example Request Payload (${escapeHtml(rb.schemaName || rb.contentType)})</summary>
+                <pre class="openapi-code-pre">${escapeHtml(rb.exampleJson)}</pre>
+              </details>`
+            : ''
+        }
+      </div>`
+    : '';
+
+  const responsesList = docs.responses || [];
+  const responsesHtml =
+    responsesList.length > 0
+      ? `<div class="openapi-section">
+          <div class="openapi-section-header">
+            <span class="openapi-section-title">Responses <span class="meta-tag">${responsesList.length}</span></span>
+          </div>
+          <div class="openapi-responses-list">
+            ${responsesList
+              .map((resp, idx) => {
+                const code = String(resp.status || '');
+                const statusClass = code.startsWith('2')
+                  ? 'status-2xx'
+                  : code.startsWith('3')
+                  ? 'status-3xx'
+                  : code.startsWith('4')
+                  ? 'status-4xx'
+                  : code.startsWith('5')
+                  ? 'status-5xx'
+                  : 'status-default';
+                const isDefaultOpen = idx === 0 && code.startsWith('2');
+
+                const respHeadersHtml =
+                  resp.headers && resp.headers.length > 0
+                    ? `<div class="openapi-subblock">
+                        <div class="openapi-subblock-title">Response Headers</div>
+                        <table class="openapi-props-table">
+                          <thead>
+                            <tr><th>Header</th><th>Type</th><th>Description</th></tr>
+                          </thead>
+                          <tbody>
+                            ${resp.headers
+                              .map(
+                                (h) => `<tr>
+                                  <td><code class="openapi-prop-name">${escapeHtml(h.name)}</code></td>
+                                  <td><span class="openapi-type-badge">${escapeHtml(h.type)}${h.format ? ` (${escapeHtml(h.format)})` : ''}</span></td>
+                                  <td>${escapeHtml(h.description || '')}</td>
+                                </tr>`
+                              )
+                              .join('')}
+                          </tbody>
+                        </table>
+                      </div>`
+                    : '';
+
+                const respPropsHtml =
+                  resp.properties && resp.properties.length > 0
+                    ? `<div class="openapi-subblock">
+                        <div class="openapi-subblock-title">Response Schema Fields (${escapeHtml(resp.schemaName || resp.schemaType || 'object')})</div>
+                        <div class="openapi-props-table-wrap">
+                          <table class="openapi-props-table">
+                            <thead>
+                              <tr><th>Field</th><th>Type</th><th>Attributes</th><th>Description</th></tr>
+                            </thead>
+                            <tbody>
+                              ${resp.properties
+                                .map((prop) => {
+                                  const flags: string[] = [];
+                                  if (prop.nullable) flags.push('<span class="openapi-opt-badge">nullable</span>');
+                                  if (prop.readOnly) flags.push('<span class="openapi-opt-badge">readOnly</span>');
+                                  if (prop.deprecated) flags.push('<span class="openapi-dep-badge">deprecated</span>');
+                                  const enumInfo =
+                                    prop.enum && prop.enum.length > 0
+                                      ? `<div class="openapi-prop-enums">Enum: ${prop.enum.slice(0, 12).map((e) => `<code>${escapeHtml(e)}</code>`).join(', ')}${prop.enum.length > 12 ? ` (+${prop.enum.length - 12} more)` : ''}</div>`
+                                      : '';
+                                  return `<tr>
+                                    <td><code class="openapi-prop-name">${escapeHtml(prop.name)}</code></td>
+                                    <td><span class="openapi-type-badge">${escapeHtml(prop.type)}${prop.format ? ` (${escapeHtml(prop.format)})` : ''}</span></td>
+                                    <td><div style="display:flex; gap:4px; flex-wrap:wrap;">${flags.join('') || '<span style="color:var(--muted); font-size:10px;">—</span>'}</div></td>
+                                    <td>${escapeHtml(prop.description || '')}${enumInfo}</td>
+                                  </tr>`;
+                                })
+                                .join('')}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>`
+                    : '';
+
+                const respExampleHtml = resp.exampleJson
+                  ? `<div class="openapi-subblock">
+                      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                        <span class="openapi-subblock-title" style="margin-bottom:0;">Example Response JSON</span>
+                        <button type="button" class="btn btn-secondary openapi-action-btn" data-openapi-action="copy-resp-example" data-resp-idx="${idx}" title="Copy example response JSON">📋 Copy Example</button>
+                      </div>
+                      <pre class="openapi-code-pre" id="openapi-resp-example-${idx}">${escapeHtml(resp.exampleJson)}</pre>
+                    </div>`
+                  : '';
+
+                const hasDetails = Boolean(respHeadersHtml || respPropsHtml || respExampleHtml);
+
+                return `<details class="openapi-resp-card" ${isDefaultOpen && hasDetails ? 'open' : ''}>
+                  <summary class="openapi-resp-summary">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex:1;">
+                      <span class="openapi-status-badge ${statusClass}">${escapeHtml(code)}</span>
+                      <span class="openapi-resp-desc">${escapeHtml(resp.description || 'Response')}</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      ${resp.contentType ? `<span class="body-mime-badge">${escapeHtml(resp.contentType)}</span>` : ''}
+                      ${resp.schemaName ? `<span class="openapi-schema-badge">${escapeHtml(resp.schemaName)}</span>` : resp.schemaType ? `<span class="openapi-type-badge">${escapeHtml(resp.schemaType)}</span>` : ''}
+                    </div>
+                  </summary>
+                  ${
+                    hasDetails
+                      ? `<div class="openapi-resp-body">
+                          ${respHeadersHtml}
+                          ${respPropsHtml}
+                          ${respExampleHtml}
+                        </div>`
+                      : ''
+                  }
+                </details>`;
+              })
+              .join('')}
+          </div>
+        </div>`
+      : '';
+
+  return `<div class="openapi-docs-container" id="openapi-docs-container">
+    <div class="openapi-hero-card">
+      <div class="openapi-hero-top">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span class="openapi-method-badge ${methodClass}">${escapeHtml(methodUpper)}</span>
+          <code class="openapi-path-code">${escapeHtml(docs.path)}</code>
+          ${docs.deprecated ? '<span class="openapi-dep-badge">DEPRECATED</span>' : ''}
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          ${docs.operationId ? `<span class="openapi-opid-badge" title="OpenAPI operationId">ID: ${escapeHtml(docs.operationId)}</span>` : ''}
+          ${
+            docs.tags && docs.tags.length > 0
+              ? docs.tags.map((t) => `<span class="meta-tag">${escapeHtml(t)}</span>`).join('')
+              : ''
+          }
+        </div>
+      </div>
+      ${docs.summary ? `<div class="openapi-hero-summary">${escapeHtml(docs.summary)}</div>` : ''}
+      ${docs.description && docs.description !== docs.summary ? `<div class="openapi-hero-desc">${escapeHtml(docs.description)}</div>` : ''}
+      ${securityHtml}
+    </div>
+    ${paramsHtml}
+    ${requestBodyHtml}
+    ${responsesHtml}
+  </div>`;
+}
+
 export function getRequestPanelHtml(
   context: RequestContext,
   state: AppState,
@@ -19,21 +342,13 @@ export function getRequestPanelHtml(
   availableTokens: StoredToken[] = [],
   initialResolvedVars: Record<string, string> = {}
 ): string {
-  const activeProfile = context.profileId || context.profile || (state.activeProfileId !== 'all' ? state.activeProfileId : undefined) || state.profiles[0]?.id;
-  const activeProfileObj = state.profiles.find((p) => p.id === activeProfile || p.name === activeProfile) || state.profiles[0];
+  const activeProfileId = state.activeProfileId && state.activeProfileId !== 'all' ? state.activeProfileId : undefined;
+  const activeProfileObj = activeProfileId
+    ? state.profiles.find((p) => p.id === activeProfileId || p.name === activeProfileId)
+    : undefined;
   const activeProfileColor = activeProfileObj?.color || '#3b82f6';
-  const profileOptions = state.profiles
-    .map((p) => {
-      const isDuplicate = state.profiles.filter((o) => o.name === p.name).length > 1;
-      const label = isDuplicate ? `${p.name} (${p.id.replace(/^profile-/, '')})` : p.name;
-      const isSelected = p.id === activeProfile || p.name === activeProfile;
-      const guardsJson = p.guards ? escapeHtml(JSON.stringify(p.guards)) : '';
-      return `<option value="${escapeHtml(p.name)}" data-id="${escapeHtml(p.id)}" data-color="${escapeHtml(p.color || '#3b82f6')}" data-guards="${guardsJson}" ${isSelected ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-    })
-    .join('');
 
-  const activeProfileId = state.activeProfileId;
-  const isFiltered = activeProfileId && activeProfileId !== 'all';
+  const isFiltered = Boolean(activeProfileId && activeProfileId !== 'all');
   const envEntries = Object.entries(state.environments).filter(([name, env]) => {
     if (!isFiltered) return true;
     if (activeProfileId === 'global') return !env.profileId || env.profileId === 'global';
@@ -1807,6 +2122,407 @@ export function getRequestPanelHtml(
     .console-msg { flex: 1; word-break: break-word; white-space: pre-wrap; }
     .console-time { color: var(--muted); font-size: 10px; flex-shrink: 0; }
 
+    /* OpenAPI Reference Styles */
+    .openapi-tab-pill {
+      font-size: 9px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(78, 201, 176, 0.18);
+      color: #4ec9b0;
+      border: 1px solid rgba(78, 201, 176, 0.35);
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+    .openapi-docs-container {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding-bottom: 12px;
+    }
+    .openapi-hero-card {
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .openapi-hero-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .openapi-method-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .openapi-method-get { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .openapi-method-post { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+    .openapi-method-put { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+    .openapi-method-patch { background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
+    .openapi-method-delete { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+    .openapi-path-code {
+      font-family: Consolas, Monaco, monospace;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      background: rgba(0, 0, 0, 0.25);
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+    .openapi-opid-badge {
+      font-size: 10px;
+      font-family: Consolas, Monaco, monospace;
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .openapi-hero-summary {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .openapi-hero-desc {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .openapi-security-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 11px;
+    }
+    .openapi-sec-label {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .openapi-sec-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      color: var(--text);
+      font-size: 11px;
+    }
+    .openapi-scope-pill {
+      font-size: 10px;
+      padding: 0 5px;
+      border-radius: 3px;
+      background: rgba(245, 158, 11, 0.18);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+    }
+    .openapi-section {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.015);
+      overflow: hidden;
+    }
+    .openapi-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 12px;
+      background: rgba(0, 0, 0, 0.18);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .openapi-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .openapi-filter-input {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      outline: none;
+      min-width: 170px;
+    }
+    .openapi-filter-input:focus { border-color: var(--primary); }
+    .openapi-params-list {
+      display: flex;
+      flex-direction: column;
+      divide-y: 1px solid var(--border);
+    }
+    .openapi-param-card {
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .openapi-param-card:last-child { border-bottom: none; }
+    .openapi-param-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .openapi-param-ident {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .openapi-param-name {
+      font-family: Consolas, Monaco, monospace;
+      font-size: 12px;
+      font-weight: 600;
+      color: #9cdcfe;
+    }
+    .openapi-loc-badge {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .loc-path { background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.35); }
+    .loc-query { background: rgba(59, 130, 246, 0.18); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.35); }
+    .loc-header { background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); }
+    .loc-cookie { background: rgba(16, 185, 129, 0.18); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); }
+    .openapi-type-badge {
+      font-family: Consolas, Monaco, monospace;
+      font-size: 10px;
+      color: #4ec9b0;
+      background: rgba(78, 201, 176, 0.1);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .openapi-schema-badge {
+      font-family: Consolas, Monaco, monospace;
+      font-size: 10px;
+      font-weight: 600;
+      color: #dcdcaa;
+      background: rgba(220, 220, 170, 0.12);
+      border: 1px solid rgba(220, 220, 170, 0.3);
+      padding: 1px 6px;
+      border-radius: 3px;
+    }
+    .openapi-req-badge {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #f87171;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      padding: 0 5px;
+      border-radius: 3px;
+    }
+    .openapi-opt-badge {
+      font-size: 9px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.05);
+      padding: 0 5px;
+      border-radius: 3px;
+    }
+    .openapi-dep-badge {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #fbbf24;
+      background: rgba(245, 158, 11, 0.18);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      padding: 0 5px;
+      border-radius: 3px;
+    }
+    .openapi-def-badge {
+      font-family: Consolas, Monaco, monospace;
+      font-size: 10px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 0 5px;
+      border-radius: 3px;
+    }
+    .openapi-param-desc, .openapi-body-desc {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .openapi-body-desc {
+      padding: 8px 12px 0 12px;
+    }
+    .openapi-enum-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 2px;
+      font-size: 11px;
+    }
+    .openapi-enum-label {
+      color: var(--muted);
+      font-size: 10px;
+    }
+    .openapi-enum-select {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 3px;
+      padding: 2px 6px;
+      font-size: 11px;
+      font-family: Consolas, Monaco, monospace;
+      outline: none;
+    }
+    .openapi-param-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .openapi-action-btn {
+      font-size: 10px !important;
+      padding: 2px 7px !important;
+      height: 22px;
+    }
+    .openapi-props-table-wrap {
+      overflow-x: auto;
+      padding: 8px 12px;
+    }
+    .openapi-props-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    .openapi-props-table th {
+      text-align: left;
+      padding: 5px 8px;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 10px;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.15);
+    }
+    .openapi-props-table td {
+      padding: 5px 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      vertical-align: top;
+    }
+    .openapi-prop-name {
+      font-family: Consolas, Monaco, monospace;
+      color: #9cdcfe;
+      font-weight: 600;
+    }
+    .openapi-prop-enums {
+      margin-top: 3px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .openapi-details {
+      margin: 4px 12px 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.2);
+    }
+    .openapi-details summary {
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--muted);
+      user-select: none;
+    }
+    .openapi-details summary:hover { color: var(--text); }
+    .openapi-code-pre {
+      margin: 0;
+      padding: 8px 10px;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #d4d4d4;
+      background: rgba(0, 0, 0, 0.28);
+      border-top: 1px solid var(--border);
+      max-height: 240px;
+      overflow: auto;
+      white-space: pre;
+    }
+    .openapi-responses-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 12px;
+    }
+    .openapi-resp-card {
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: rgba(0, 0, 0, 0.14);
+      overflow: hidden;
+    }
+    .openapi-resp-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 10px;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+    }
+    .openapi-resp-summary::-webkit-details-marker { display: none; }
+    .openapi-resp-summary:hover { background: rgba(255, 255, 255, 0.03); }
+    .openapi-status-badge {
+      font-family: Consolas, Monaco, monospace;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 1px 7px;
+      border-radius: 3px;
+    }
+    .status-2xx { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+    .status-3xx { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .status-4xx { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+    .status-5xx { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+    .status-default { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+    .openapi-resp-desc {
+      font-size: 12px;
+      color: var(--text);
+      font-weight: 500;
+    }
+    .openapi-resp-body {
+      border-top: 1px solid var(--border);
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: rgba(0, 0, 0, 0.12);
+    }
+    .openapi-subblock-title {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 4px;
+      letter-spacing: 0.4px;
+    }
+
     ${renderAuthCss()}
   </style>
 </head>
@@ -1843,12 +2559,7 @@ export function getRequestPanelHtml(
         </div>
       </div>
       <div class="selectors">
-        <div class="selector-group">
-          <span id="profile-indicator-dot" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${activeProfileColor}; box-shadow: 0 0 6px ${activeProfileColor}aa; flex-shrink: 0; margin-right: 4px;"></span>
-          <span>Profile:</span>
-          <select id="select-profile" class="select-control">${profileOptions}</select>
-          <span id="profile-guard-badge" class="pill" style="display: none; font-size: 10px; padding: 1px 6px; margin-left: 4px; font-weight: 600; cursor: help; border-radius: 4px;">🛡️ Guarded</span>
-        </div>
+        <span id="profile-guard-badge" class="pill" style="display: none; font-size: 10px; padding: 1px 6px; font-weight: 600; cursor: help; border-radius: 4px;">🛡️ Guarded</span>
         <div class="selector-group">
           <span>Environment:</span>
           <select id="select-env" class="select-control">${environmentOptions}</select>
@@ -1924,7 +2635,7 @@ export function getRequestPanelHtml(
           <button class="tab-btn" data-tab="tab-body">Body</button>
           <button class="tab-btn" data-tab="tab-auth">Auth</button>
           <button class="tab-btn" data-tab="tab-scripts">Scripts</button>
-          <button class="tab-btn" data-tab="tab-notes">Notes</button>
+          <button class="tab-btn" data-tab="tab-notes">Docs &amp; Notes${context.openApiDocs ? ' <span class="openapi-tab-pill">OpenAPI</span>' : ''}</button>
         </div>
 
         <!-- Tab: Variables -->
@@ -2017,6 +2728,11 @@ export function getRequestPanelHtml(
                 <span id="json-syntax-indicator" style="font-size: 11px; font-weight: 500;"></span>
               </div>
               <div style="display: flex; gap: 6px;">
+                ${
+                  context.openApiDocs?.requestBody?.exampleJson
+                    ? `<button id="btn-insert-openapi-body" type="button" class="btn btn-secondary" style="font-size: 11px; padding: 2px 8px; border-color: rgba(78, 201, 176, 0.45); color: #4ec9b0;" title="Reset or populate JSON body with the resolved OpenAPI schema example">⚡ OpenAPI Example</button>`
+                    : ''
+                }
                 <button id="btn-fmt-json" class="btn btn-secondary" style="font-size: 11px; padding: 2px 8px;" title="Format JSON with indentation">Beautify JSON</button>
                 <button id="btn-edit-body-json" class="btn btn-secondary" style="font-size: 11px; padding: 2px 8px;" title="Open in VS Code Editor (Monaco)">↗ Open in Editor</button>
               </div>
@@ -2113,7 +2829,7 @@ export function getRequestPanelHtml(
               <button type="button" class="subtab-btn script-type-btn" data-script-view="post">Post-Response Script (Tests)</button>
             </div>
             <div class="subtab-meta">
-              Access globals: <code style="color:#4ec9b0;">bn</code>, <code style="color:#4ec9b0;">pm</code>, or direct (<code style="color:#4ec9b0;">test</code>, <code style="color:#4ec9b0;">expect</code>, <code style="color:#4ec9b0;">response</code>)
+              Access globals: <code style="color:#4ec9b0;">bn</code>, <code style="color:#4ec9b0;">pm</code>, or direct (<code style="color:#4ec9b0;">test</code>, <code style="color:#4ec9b0;">expect</code>, <code style="color:#4ec9b0;">response</code>, <code style="color:#4ec9b0;">environment</code>, <code style="color:#4ec9b0;">collection</code>)
             </div>
           </div>
 
@@ -2122,6 +2838,8 @@ export function getRequestPanelHtml(
             <span style="font-size:10px; color:var(--muted); margin-right:4px;">SNIPPETS:</span>
             <button type="button" class="snippet-btn" data-snippet="set-env">+ Set Env Var</button>
             <button type="button" class="snippet-btn" data-snippet="get-env">+ Get Env Var</button>
+            <button type="button" class="snippet-btn" data-snippet="set-col">+ Set Col Var</button>
+            <button type="button" class="snippet-btn" data-snippet="get-col">+ Get Col Var</button>
             <button type="button" class="snippet-btn" data-snippet="status-200">+ Status is 200</button>
             <button type="button" class="snippet-btn" data-snippet="parse-json">+ Parse JSON</button>
             <button type="button" class="snippet-btn" data-snippet="set-header">+ Set Header</button>
@@ -2130,22 +2848,46 @@ export function getRequestPanelHtml(
 
           <div id="script-view-pre" class="script-subview" style="display: flex;">
             <div style="font-size:11px; color:var(--muted); margin-bottom:6px; flex-shrink: 0;">
-              Runs before sending. Mutate <code>request.headers</code>, <code>request.body</code>, or set variables with <code>environment.set()</code> / <code>bn.environment.set()</code>.
+              Runs before sending. Mutate <code>request.headers</code>, <code>request.body</code>, or set variables on the active environment (<code>environment.set()</code>) or parent collection (<code>collection.set()</code>).
             </div>
-            <textarea id="req-pre-script" class="textarea-box" placeholder="// Example: set dynamic timestamp or signature&#10;request.headers['X-Timestamp'] = Date.now().toString();&#10;environment.set('reqId', crypto.randomUUID());&#10;// Or namespace: bn.request.headers / bn.environment.set">${escapeHtml(context.preRequestScript || '')}</textarea>
+            <textarea id="req-pre-script" class="textarea-box" placeholder="// Example: set dynamic timestamp or signature&#10;request.headers['X-Timestamp'] = Date.now().toString();&#10;environment.set('reqId', crypto.randomUUID());&#10;collection.set('colReqId', crypto.randomUUID());&#10;// Or namespace: bn.environment.set / bn.collection.set">${escapeHtml(context.preRequestScript || '')}</textarea>
           </div>
 
           <div id="script-view-post" class="script-subview" style="display: none;">
             <div style="font-size:11px; color:var(--muted); margin-bottom:6px; flex-shrink: 0;">
-              Runs after response. Assert tests with <code>test()</code> / <code>bn.test()</code> and <code>expect()</code>, or store tokens with <code>environment.set()</code> / <code>bn.environment.set()</code>.
+              Runs after response. Assert tests with <code>test()</code> and <code>expect()</code>, or store tokens on the active environment (<code>environment.set()</code>) or parent collection (<code>collection.set()</code>).
             </div>
-            <textarea id="req-post-script" class="textarea-box" placeholder="// Example: assert status 200 and store token&#10;test('Status is 200', () => {&#10;  expect(response.status).toBe(200);&#10;});&#10;&#10;const data = response.json();&#10;if (data.token) {&#10;  environment.set('authToken', data.token);&#10;}">${escapeHtml(context.postResponseScript || '')}</textarea>
+            <textarea id="req-post-script" class="textarea-box" placeholder="// Example: assert status 200 and store token&#10;test('Status is 200', () => {&#10;  expect(response.status).toBe(200);&#10;});&#10;&#10;const data = response.json();&#10;if (data.AccessToken) {&#10;  environment.set('accessToken', data.AccessToken);&#10;  // Or save to parent collection: collection.set('accessToken', data.AccessToken);&#10;}">${escapeHtml(context.postResponseScript || '')}</textarea>
           </div>
         </div>
 
-        <!-- Tab: Notes -->
+        <!-- Tab: Notes & OpenAPI Docs -->
         <div id="tab-notes" class="tab-content">
-          <textarea id="req-notes" class="textarea-box" placeholder="Documentation or notes for this request...">${escapeHtml(context.notes || '')}</textarea>
+          ${
+            context.openApiDocs
+              ? `<div class="subtab-bar" style="margin-bottom: 10px;">
+                  <div class="subtab-nav">
+                    <button type="button" class="subtab-btn docs-type-btn active" data-docs-view="openapi">📖 OpenAPI Reference</button>
+                    <button type="button" class="subtab-btn docs-type-btn" data-docs-view="notes">📝 Request Notes</button>
+                  </div>
+                  <div class="subtab-meta">
+                    Interactive schema &amp; parameter reference imported from OpenAPI specification
+                  </div>
+                </div>
+                <div id="docs-view-openapi" style="display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto;">
+                  ${renderOpenApiDocsHtml(context.openApiDocs)}
+                </div>
+                <div id="docs-view-notes" style="display: none; flex-direction: column; flex: 1; min-height: 0; height: 100%;">
+                  <textarea id="req-notes" class="textarea-box" placeholder="Documentation or notes for this request...">${escapeHtml(context.notes || '')}</textarea>
+                </div>`
+              : `<div style="display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%;">
+                  <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                    <span>📝 Notes &amp; Documentation</span>
+                    <span style="opacity: 0.7;">(Requests imported from OpenAPI / Swagger will automatically surface interactive schemas &amp; docs here)</span>
+                  </div>
+                  <textarea id="req-notes" class="textarea-box" placeholder="Documentation or notes for this request...">${escapeHtml(context.notes || '')}</textarea>
+                </div>`
+          }
         </div>
       </div>
 
@@ -2244,9 +2986,12 @@ export function getRequestPanelHtml(
     let currentInheritedHeaders = initialInheritedHeaders;
     let currentResolvedVars = initialResolvedVars;
     let currentEnvironments = ${JSON.stringify(environmentsData).replace(/</g, '\\u003c')};
+    let currentProfiles = ${JSON.stringify(state.profiles || []).replace(/</g, '\\u003c')};
+    let currentActiveProfileId = ${JSON.stringify(activeProfileId || '')};
     let initialBodyType = "${escapeHtml(context.bodyType || '')}";
     let initialBody = ${JSON.stringify(context.body || '').replace(/</g, '\\u003c')};
     let initialBodyFormData = ${JSON.stringify(context.bodyFormData || []).replace(/</g, '\\u003c')};
+    const initialOpenApiDocs = ${JSON.stringify(context.openApiDocs || null).replace(/</g, '\\u003c')};
     const activeCollection = ${JSON.stringify(context.collection || state.collections[0]?.name || 'Demo Collection').replace(/</g, '\\u003c')};
     const activeFolder = ${JSON.stringify(context.folder && context.folder !== 'Root' ? context.folder : '').replace(/</g, '\\u003c')};
 
@@ -2287,6 +3032,19 @@ export function getRequestPanelHtml(
       });
     });
 
+    // Docs / Notes view toggle (OpenAPI Reference vs Request Notes)
+    document.querySelectorAll('.docs-type-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.docs-type-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const view = btn.getAttribute('data-docs-view');
+        const oaView = document.getElementById('docs-view-openapi');
+        const notesView = document.getElementById('docs-view-notes');
+        if (oaView) oaView.style.display = view === 'openapi' ? 'flex' : 'none';
+        if (notesView) notesView.style.display = view === 'notes' ? 'flex' : 'none';
+      });
+    });
+
     // Script Snippets
     document.querySelectorAll('.snippet-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -2303,6 +3061,12 @@ export function getRequestPanelHtml(
             break;
           case 'get-env':
             snippetCode = 'const val = environment.get("myKey");\\nconsole.log("Got value:", val);\\n';
+            break;
+          case 'set-col':
+            snippetCode = 'collection.set("myKey", "myValue");\\n';
+            break;
+          case 'get-col':
+            snippetCode = 'const val = collection.get("myKey");\\nconsole.log("Got collection value:", val);\\n';
             break;
           case 'status-200':
             snippetCode = 'test("Status code is 200", () => {\\n  expect(response.status).toBe(200);\\n});\\n';
@@ -3113,7 +3877,6 @@ export function getRequestPanelHtml(
 
     function requestInheritedData() {
       const selectEnv = document.getElementById('select-env');
-      const selectProfile = document.getElementById('select-profile');
       const selectBaseUrlPref = document.getElementById('select-base-url-pref');
       const rawBaseUrlPref = selectBaseUrlPref ? selectBaseUrlPref.value : undefined;
       const baseUrlPreference = (rawBaseUrlPref === 'collection' || rawBaseUrlPref === 'environment' || rawBaseUrlPref === 'none') ? rawBaseUrlPref : undefined;
@@ -3121,8 +3884,7 @@ export function getRequestPanelHtml(
       vscode.postMessage({
         type: 'getInherited',
         payload: {
-          profile: selectProfile ? selectProfile.value : undefined,
-          profileId: selectProfile && selectProfile.selectedOptions[0] ? selectProfile.selectedOptions[0].dataset.id : undefined,
+          profileId: currentActiveProfileId || undefined,
           environment: selectEnv ? selectEnv.value : undefined,
           baseUrlPreference: baseUrlPreference,
           collection: activeCollection,
@@ -3137,47 +3899,43 @@ export function getRequestPanelHtml(
     if (selectEnvEl) {
       selectEnvEl.addEventListener('change', () => requestInheritedData());
     }
+    function getActiveProfileObject() {
+      if (!currentActiveProfileId || currentActiveProfileId === 'all' || !Array.isArray(currentProfiles)) return null;
+      return currentProfiles.find(function(p) {
+        return p.id === currentActiveProfileId || p.name === currentActiveProfileId;
+      }) || null;
+    }
+
     function updateActiveProfileAccent() {
-      const selectProfileEl = document.getElementById('select-profile');
-      const dotEl = document.getElementById('profile-indicator-dot');
       const guardBadge = document.getElementById('profile-guard-badge');
       const methodSelect = document.getElementById('method-select');
-      if (selectProfileEl) {
-        const selOpt = selectProfileEl.options[selectProfileEl.selectedIndex];
-        const color = selOpt?.getAttribute('data-color') || '#3b82f6';
-        if (dotEl) {
-          dotEl.style.background = color;
-          dotEl.style.boxShadow = '0 0 6px ' + color + 'aa';
-        }
+      const activeProf = getActiveProfileObject();
+      const color = (activeProf && activeProf.color) ? activeProf.color : '#3b82f6';
+      if (document.documentElement && document.documentElement.style) {
         document.documentElement.style.setProperty('--primary', color);
+      }
 
-        if (guardBadge && selOpt) {
-          let guards = null;
-          try {
-            const rawGuards = selOpt.getAttribute('data-guards');
-            if (rawGuards) guards = JSON.parse(rawGuards);
-          } catch (_) {}
-
-          if (guards && guards.enabled) {
-            guardBadge.style.display = 'inline-flex';
-            const blocked = (guards.blockedMethods || []).map(m => m.toUpperCase());
-            const curMethod = methodSelect ? methodSelect.value.toUpperCase() : '';
-            if (blocked.includes(curMethod)) {
-              guardBadge.textContent = '⛔ ' + curMethod + ' Blocked';
-              guardBadge.style.color = '#ef4444';
-              guardBadge.style.background = 'rgba(239, 68, 68, 0.15)';
-              guardBadge.style.borderColor = 'rgba(239, 68, 68, 0.35)';
-              guardBadge.title = 'Profile "' + selOpt.value + '" has Safety Guards active: ' + curMethod + ' requests are guarded/blocked.';
-            } else {
-              guardBadge.textContent = '🛡️ Guarded';
-              guardBadge.style.color = '#f59e0b';
-              guardBadge.style.background = 'rgba(245, 158, 11, 0.15)';
-              guardBadge.style.borderColor = 'rgba(245, 158, 11, 0.35)';
-              guardBadge.title = 'Profile "' + selOpt.value + '" has Safety Guards active. Blocked methods: ' + (blocked.join(', ') || 'None');
-            }
+      if (guardBadge) {
+        const guards = activeProf ? activeProf.guards : null;
+        if (guards && guards.enabled) {
+          guardBadge.style.display = 'inline-flex';
+          const blocked = (guards.blockedMethods || []).map(m => m.toUpperCase());
+          const curMethod = methodSelect ? methodSelect.value.toUpperCase() : '';
+          if (blocked.includes(curMethod)) {
+            guardBadge.textContent = '⛔ ' + curMethod + ' Blocked';
+            guardBadge.style.color = '#ef4444';
+            guardBadge.style.background = 'rgba(239, 68, 68, 0.15)';
+            guardBadge.style.borderColor = 'rgba(239, 68, 68, 0.35)';
+            guardBadge.title = 'Active Profile "' + (activeProf.name || '') + '" has Safety Guards active: ' + curMethod + ' requests are guarded/blocked.';
           } else {
-            guardBadge.style.display = 'none';
+            guardBadge.textContent = '🛡️ Guarded';
+            guardBadge.style.color = '#f59e0b';
+            guardBadge.style.background = 'rgba(245, 158, 11, 0.15)';
+            guardBadge.style.borderColor = 'rgba(245, 158, 11, 0.35)';
+            guardBadge.title = 'Active Profile "' + (activeProf.name || '') + '" has Safety Guards active. Blocked methods: ' + (blocked.join(', ') || 'None');
           }
+        } else {
+          guardBadge.style.display = 'none';
         }
       }
     }
@@ -3186,6 +3944,7 @@ export function getRequestPanelHtml(
     if (methodSelectEl) {
       methodSelectEl.addEventListener('change', () => updateActiveProfileAccent());
     }
+    updateActiveProfileAccent();
 
     function renderEnvironmentSelectHtml(environments, activeProfileId, selectedValue) {
       if (!environments || !Array.isArray(environments)) {
@@ -3288,10 +4047,8 @@ export function getRequestPanelHtml(
 
       let html = '<option value=""' + (!selectedValue ? ' selected' : '') + '>No Environment (Collection Defaults)</option>';
       if (hasSplit && profileEnvs.length > 0 && sharedEnvs.length > 0) {
-        const selectProfileEl = document.getElementById('select-profile');
-        const profName = (selectProfileEl && selectProfileEl.options && selectProfileEl.selectedIndex >= 0 && selectProfileEl.options[selectProfileEl.selectedIndex])
-          ? (selectProfileEl.options[selectProfileEl.selectedIndex].text || 'Profile')
-          : 'Profile';
+        const activeProf = getActiveProfileObject();
+        const profName = (activeProf && activeProf.name) ? activeProf.name : 'Profile';
         html += '<optgroup label="Profile Environments (' + safeEscape(profName) + ')">' + buildGroupOptions(profileEnvs) + '</optgroup>';
         html += '<optgroup label="Shared / Global Environments">' + buildGroupOptions(sharedEnvs) + '</optgroup>';
       } else {
@@ -3302,25 +4059,15 @@ export function getRequestPanelHtml(
 
     function updateEnvironmentDropdown(preferredValue) {
       const selectEnv = document.getElementById('select-env');
-      const selectProfile = document.getElementById('select-profile');
       if (!selectEnv) return;
       const targetVal = preferredValue !== undefined ? preferredValue : selectEnv.value;
-      const selectedOption = selectProfile ? selectProfile.options[selectProfile.selectedIndex] : null;
-      const activePid = selectedOption ? (selectedOption.getAttribute('data-id') || selectedOption.value) : undefined;
+      const activePid = currentActiveProfileId || undefined;
       selectEnv.innerHTML = renderEnvironmentSelectHtml(currentEnvironments, activePid, targetVal);
       if (selectEnv.value !== targetVal) {
         selectEnv.value = targetVal || '';
       }
     }
 
-    const selectProfileEl = document.getElementById('select-profile');
-    if (selectProfileEl) {
-      selectProfileEl.addEventListener('change', () => {
-        updateActiveProfileAccent();
-        updateEnvironmentDropdown();
-        requestInheritedData();
-      });
-    }
     const selectBaseUrlPrefEl = document.getElementById('select-base-url-pref');
     if (selectBaseUrlPrefEl) {
       selectBaseUrlPrefEl.addEventListener('change', () => requestInheritedData());
@@ -4047,9 +4794,6 @@ export function getRequestPanelHtml(
 
     // Helper to assemble payload
     function getPayload() {
-      const profileSelect = document.getElementById('select-profile');
-      const selectedOption = profileSelect ? profileSelect.options[profileSelect.selectedIndex] : null;
-      const profileId = selectedOption ? selectedOption.getAttribute('data-id') : undefined;
       const selectBaseUrlPref = document.getElementById('select-base-url-pref');
       const rawBaseUrlPref = selectBaseUrlPref ? selectBaseUrlPref.value : undefined;
       const baseUrlPreference = (rawBaseUrlPref === 'collection' || rawBaseUrlPref === 'environment' || rawBaseUrlPref === 'none') ? rawBaseUrlPref : undefined;
@@ -4060,8 +4804,6 @@ export function getRequestPanelHtml(
         requestName: document.getElementById('req-name-input')?.value?.trim() || '',
         method: document.getElementById('method-select').value,
         url: document.getElementById('url-input').value.trim(),
-        profile: profileSelect ? profileSelect.value : '',
-        profileId: profileId,
         environment: document.getElementById('select-env').value,
         baseUrlPreference: baseUrlPreference,
         collection: activeCollection,
@@ -4074,7 +4816,8 @@ export function getRequestPanelHtml(
         auth: getAuthSettings(),
         notes: document.getElementById('req-notes').value,
         preRequestScript: document.getElementById('req-pre-script')?.value || '',
-        postResponseScript: document.getElementById('req-post-script')?.value || ''
+        postResponseScript: document.getElementById('req-post-script')?.value || '',
+        openApiDocs: initialOpenApiDocs || undefined
       };
     }
 
@@ -5092,21 +5835,14 @@ export function getRequestPanelHtml(
           currentEnvironments = msg.environments;
         }
         if (msg.profiles && Array.isArray(msg.profiles)) {
-          const selectProfile = document.getElementById('select-profile');
-          if (selectProfile) {
-            const currentSelected = selectProfile.value;
-            selectProfile.innerHTML = msg.profiles.map(function(p) {
-              const guardsAttr = p.guards ? JSON.stringify(p.guards).replace(/"/g, '&quot;') : '';
-              return '<option value="' + p.name.replace(/"/g, '&quot;') + '" data-id="' + p.id.replace(/"/g, '&quot;') + '" data-color="' + (p.color || '#3b82f6').replace(/"/g, '&quot;') + '" data-guards="' + guardsAttr + '">' + p.name + '</option>';
-            }).join('');
-            if (msg.profiles.some(function(p) { return p.name === currentSelected; })) {
-              selectProfile.value = currentSelected;
-            }
-            updateActiveProfileAccent();
-          }
+          currentProfiles = msg.profiles;
         }
+        if ('activeProfileId' in msg) {
+          currentActiveProfileId = msg.activeProfileId || '';
+        }
+        updateActiveProfileAccent();
         const selectEnv = document.getElementById('select-env');
-        const currentEnvVal = selectEnv ? selectEnv.value : '';
+        const currentEnvVal = msg.activeEnvironment !== undefined ? msg.activeEnvironment : (selectEnv ? selectEnv.value : '');
         updateEnvironmentDropdown(currentEnvVal);
         requestInheritedData();
       }
@@ -5120,19 +5856,15 @@ export function getRequestPanelHtml(
       }
 
       if (msg.type === 'activeProfileChanged' && (msg.profileId || msg.profileName)) {
-        const selectProfile = document.getElementById('select-profile');
-        if (selectProfile) {
-          for (let i = 0; i < selectProfile.options.length; i++) {
-            const opt = selectProfile.options[i];
-            if ((msg.profileId && opt.dataset.id === msg.profileId) || (msg.profileName && opt.value === msg.profileName)) {
-              selectProfile.selectedIndex = i;
-              break;
-            }
-          }
-          updateActiveProfileAccent();
-          updateEnvironmentDropdown();
-          requestInheritedData();
+        if (msg.profileId) {
+          currentActiveProfileId = msg.profileId === 'all' ? '' : msg.profileId;
+        } else if (msg.profileName && Array.isArray(currentProfiles)) {
+          const matched = currentProfiles.find(function(p) { return p.name === msg.profileName; });
+          currentActiveProfileId = matched ? matched.id : msg.profileName;
         }
+        updateActiveProfileAccent();
+        updateEnvironmentDropdown();
+        requestInheritedData();
       }
     });
 
@@ -5321,7 +6053,6 @@ export function getRequestPanelHtml(
           name: p.requestName,
           method: p.method,
           url: p.url,
-          profile: p.profile,
           environment: p.environment,
           baseUrlPreference: p.baseUrlPreference,
           headers: p.headers,
@@ -5465,6 +6196,195 @@ export function getRequestPanelHtml(
           }
         });
       }
+    });
+
+    // ==========================================
+    // OpenAPI Docs & Schema Interactive Actions
+    // ==========================================
+    const openApiParamFilter = document.getElementById('openapi-param-filter');
+    if (openApiParamFilter) {
+      openApiParamFilter.addEventListener('input', () => {
+        const q = (openApiParamFilter.value || '').trim().toLowerCase();
+        document.querySelectorAll('.openapi-param-card').forEach(card => {
+          const searchStr = (card.getAttribute('data-param-search') || '').toLowerCase();
+          card.style.display = (!q || searchStr.includes(q)) ? '' : 'none';
+        });
+      });
+    }
+
+    function flashOpenApiBtn(btn, label) {
+      if (!btn) return;
+      const orig = btn.getAttribute('data-orig-label') || btn.textContent;
+      btn.setAttribute('data-orig-label', orig);
+      btn.textContent = label || '✓ Added';
+      safeSetTimeout(() => {
+        btn.textContent = orig;
+      }, 1200);
+    }
+
+    function upsertRequestVariable(varName, varVal) {
+      if (!varName || !varRowsContainer) return;
+      const rows = Array.from(varRowsContainer.querySelectorAll('.param-row'));
+      let targetRow = rows.find(r => {
+        const k = r.querySelector('[data-role="name"]');
+        return k && k.value.trim() === varName;
+      });
+      if (!targetRow) {
+        const emptyRow = rows.find(r => {
+          const k = r.querySelector('[data-role="name"]');
+          const v = r.querySelector('[data-role="value"]');
+          return k && !k.value.trim() && v && !v.value.trim();
+        });
+        if (emptyRow) {
+          targetRow = emptyRow;
+        }
+      }
+      if (targetRow) {
+        const k = targetRow.querySelector('[data-role="name"]');
+        const v = targetRow.querySelector('[data-role="value"]');
+        const en = targetRow.querySelector('[data-role="enabled"]');
+        if (k) k.value = varName;
+        if (v && (varVal !== undefined && varVal !== '')) v.value = varVal;
+        if (en) en.checked = true;
+        updateRowVariableHighlight(targetRow);
+        renderInheritedVars();
+      } else {
+        addVarRow(varName, varVal || '', true, false);
+      }
+      refreshAllVariableHighlights();
+    }
+
+    function upsertRequestHeader(hdrName, hdrVal) {
+      if (!hdrName || !headerRowsContainer) return;
+      const rows = Array.from(headerRowsContainer.querySelectorAll('.param-row'));
+      let targetRow = rows.find(r => {
+        const k = r.querySelector('[data-role="key"]');
+        return k && k.value.trim().toLowerCase() === hdrName.toLowerCase();
+      });
+      if (!targetRow) {
+        const emptyRow = rows.find(r => {
+          const k = r.querySelector('[data-role="key"]');
+          const v = r.querySelector('[data-role="value"]');
+          return k && !k.value.trim() && v && !v.value.trim();
+        });
+        if (emptyRow) {
+          targetRow = emptyRow;
+        }
+      }
+      if (targetRow) {
+        const k = targetRow.querySelector('[data-role="key"]');
+        const v = targetRow.querySelector('[data-role="value"]');
+        const en = targetRow.querySelector('[data-role="enabled"]');
+        if (k) k.value = hdrName;
+        if (v) v.value = hdrVal || '';
+        if (en) en.checked = true;
+        updateRowVariableHighlight(targetRow);
+        renderInheritedHeaders();
+      } else {
+        addHeaderRow(hdrName, hdrVal || '', true);
+      }
+      refreshAllVariableHighlights();
+    }
+
+    function upsertUrlQueryParam(paramName, rawVal) {
+      const urlInput = document.getElementById('url-input');
+      if (!urlInput || !paramName) return;
+      const currentUrl = urlInput.value.trim();
+      const qIdx = currentUrl.indexOf('?');
+      const basePart = qIdx >= 0 ? currentUrl.substring(0, qIdx) : currentUrl;
+      const queryPart = qIdx >= 0 ? currentUrl.substring(qIdx + 1) : '';
+      const pairs = queryPart ? queryPart.split('&').filter(Boolean) : [];
+      const encodedName = encodeURIComponent(paramName);
+      const isTemplateVar = typeof rawVal === 'string' && rawVal.startsWith('{{') && rawVal.endsWith('}}');
+      const formattedVal = isTemplateVar ? rawVal : encodeURIComponent(rawVal ?? '');
+      const newPair = encodedName + '=' + formattedVal;
+
+      let replaced = false;
+      const updatedPairs = pairs.map(p => {
+        const eqIdx = p.indexOf('=');
+        const k = eqIdx >= 0 ? p.substring(0, eqIdx) : p;
+        if (decodeURIComponent(k) === paramName || k === paramName) {
+          replaced = true;
+          return newPair;
+        }
+        return p;
+      });
+      if (!replaced) {
+        updatedPairs.push(newPair);
+      }
+      urlInput.value = basePart + '?' + updatedPairs.join('&');
+      updateUrlPreview();
+      refreshAllVariableHighlights();
+    }
+
+    function insertOpenApiBodyExample(triggerBtn) {
+      const exJson = initialOpenApiDocs && initialOpenApiDocs.requestBody && initialOpenApiDocs.requestBody.exampleJson;
+      if (!exJson) return;
+      recordUndoSnapshot(true);
+      const jsonTa = document.getElementById('req-body-json');
+      if (jsonTa) {
+        jsonTa.value = exJson;
+      }
+      selectBodyType('json', true);
+      updateJsonHighlight();
+      refreshBodyVariableHighlights();
+      recordUndoSnapshot(false);
+      checkDirtyState();
+      flashOpenApiBtn(triggerBtn, '✓ Inserted!');
+    }
+
+    const btnOpenApiInsertBody = document.getElementById('btn-openapi-insert-body');
+    if (btnOpenApiInsertBody) {
+      btnOpenApiInsertBody.addEventListener('click', () => insertOpenApiBodyExample(btnOpenApiInsertBody));
+    }
+
+    const btnInsertOpenApiBodyToolbar = document.getElementById('btn-insert-openapi-body');
+    if (btnInsertOpenApiBodyToolbar) {
+      btnInsertOpenApiBodyToolbar.addEventListener('click', () => insertOpenApiBodyExample(btnInsertOpenApiBodyToolbar));
+    }
+
+    document.querySelectorAll('[data-openapi-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.getAttribute('data-openapi-action');
+        const paramName = btn.getAttribute('data-param-name') || '';
+        const enumSelectId = btn.getAttribute('data-enum-select');
+        const enumSelect = enumSelectId ? document.getElementById(enumSelectId) : null;
+        const paramVal = enumSelect ? enumSelect.value : (btn.getAttribute('data-param-val') || '');
+
+        if (action === 'add-query') {
+          recordUndoSnapshot(true);
+          upsertUrlQueryParam(paramName, paramVal);
+          recordUndoSnapshot(false);
+          checkDirtyState();
+          flashOpenApiBtn(btn, '✓ Added to URL');
+        } else if (action === 'add-query-var') {
+          recordUndoSnapshot(true);
+          upsertUrlQueryParam(paramName, '{{' + paramName + '}}');
+          upsertRequestVariable(paramName, paramVal);
+          recordUndoSnapshot(false);
+          checkDirtyState();
+          flashOpenApiBtn(btn, '✓ Added {{' + paramName + '}}');
+        } else if (action === 'add-path-var') {
+          recordUndoSnapshot(true);
+          upsertRequestVariable(paramName, paramVal);
+          recordUndoSnapshot(false);
+          checkDirtyState();
+          flashOpenApiBtn(btn, '✓ Set Variable');
+        } else if (action === 'add-header') {
+          recordUndoSnapshot(true);
+          upsertRequestHeader(paramName, paramVal);
+          recordUndoSnapshot(false);
+          checkDirtyState();
+          flashOpenApiBtn(btn, '✓ Added Header');
+        } else if (action === 'copy-resp-example') {
+          const idx = btn.getAttribute('data-resp-idx');
+          const pre = document.getElementById('openapi-resp-example-' + idx);
+          if (pre && navigator.clipboard) {
+            navigator.clipboard.writeText(pre.textContent || '');
+            flashOpenApiBtn(btn, '✓ Copied!');
+          }
+        }
+      });
     });
   </script>
 </body>

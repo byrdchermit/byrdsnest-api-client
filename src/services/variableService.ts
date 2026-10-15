@@ -192,10 +192,12 @@ export class VariableService {
     // 1b. Active/Target Profile variables (overrides Shared / Global)
     const activePid = this.stateManager.getActiveProfileId();
     const targetProfileId = (profileNameOrId && profileNameOrId !== 'all') ? profileNameOrId : (activePid !== 'all' ? activePid : undefined);
+    let activeProfile: Profile | undefined;
     if (targetProfileId && targetProfileId !== 'global') {
-      const profile = this.stateManager.getProfile(targetProfileId);
-      if (profile?.variables) {
-        Object.entries(profile.variables).forEach(([k, v]) => {
+      activeProfile = this.stateManager.getProfile(targetProfileId);
+      const prof = activeProfile;
+      if (prof?.variables) {
+        Object.entries(prof.variables).forEach(([k, v]) => {
           if (k && v !== undefined) {
             const val = String(v);
             resolved[k] = val;
@@ -203,7 +205,7 @@ export class VariableService {
               key: k,
               value: val,
               source: 'profile',
-              sourceName: `Profile: ${profile.name}`,
+              sourceName: `Profile: ${prof.name}`,
             });
           }
         });
@@ -402,6 +404,66 @@ export class VariableService {
       }
     });
 
+    // 4b. Re-evaluate collection / folder baseUrl if it references {{baseUrl}}, {{envBaseUrl}}, or environment variables
+    const underlyingBaseUrl = resolved['envBaseUrl'] || activeProfile?.variables?.['baseUrl'] || '';
+    if (collectionBaseUrl && (collectionBaseUrl.includes('{{') || collectionBaseUrl.startsWith(':') || (collectionBaseUrl.startsWith('/') && !collectionBaseUrl.startsWith('//')))) {
+      let expandedColBaseUrl = collectionBaseUrl;
+      if (expandedColBaseUrl.startsWith(':') && underlyingBaseUrl) {
+        expandedColBaseUrl = `${underlyingBaseUrl}${expandedColBaseUrl}`;
+      } else if (expandedColBaseUrl.startsWith('/') && !expandedColBaseUrl.startsWith('//') && underlyingBaseUrl) {
+        expandedColBaseUrl = `${underlyingBaseUrl}${expandedColBaseUrl}`;
+      } else {
+        if (underlyingBaseUrl) {
+          expandedColBaseUrl = expandedColBaseUrl
+            .replace(/\{\{baseUrl\}\}/g, underlyingBaseUrl)
+            .replace(/\{\{envBaseUrl\}\}/g, underlyingBaseUrl);
+        }
+        if (expandedColBaseUrl.includes('{{')) {
+          expandedColBaseUrl = this.interpolate(expandedColBaseUrl, {
+            ...resolved,
+            baseUrl: underlyingBaseUrl,
+            envBaseUrl: underlyingBaseUrl,
+          });
+        }
+      }
+      collectionBaseUrl = expandedColBaseUrl.trim().replace(/\/+$/, '');
+      resolved['collectionBaseUrl'] = collectionBaseUrl;
+      if (preferCollectionBaseUrl && baseUrlPreference !== 'none') {
+        resolved['baseUrl'] = collectionBaseUrl;
+      }
+      for (const inh of inherited) {
+        if ((inh.source === 'collection' || inh.source === 'folder') && inh.key === 'baseUrl') {
+          inh.value = collectionBaseUrl;
+        }
+      }
+    }
+
+    // Also re-evaluate resolved['baseUrl'] if it was set by a collection/folder variable referencing {{baseUrl}} or {{envBaseUrl}}
+    if (resolved['baseUrl'] && (resolved['baseUrl'].includes('{{baseUrl}}') || resolved['baseUrl'].includes('{{envBaseUrl}}') || resolved['baseUrl'].startsWith(':'))) {
+      if (resolved['baseUrl'].startsWith(':') && underlyingBaseUrl) {
+        resolved['baseUrl'] = `${underlyingBaseUrl}${resolved['baseUrl']}`;
+      } else {
+        if (underlyingBaseUrl) {
+          resolved['baseUrl'] = resolved['baseUrl']
+            .replace(/\{\{baseUrl\}\}/g, underlyingBaseUrl)
+            .replace(/\{\{envBaseUrl\}\}/g, underlyingBaseUrl);
+        }
+        if (resolved['baseUrl'].includes('{{')) {
+          resolved['baseUrl'] = this.interpolate(resolved['baseUrl'], {
+            ...resolved,
+            baseUrl: underlyingBaseUrl,
+            envBaseUrl: underlyingBaseUrl,
+          });
+        }
+      }
+      resolved['baseUrl'] = resolved['baseUrl'].trim().replace(/\/+$/, '');
+      for (const inh of inherited) {
+        if (inh.key === 'baseUrl' && !inh.isOverridden) {
+          inh.value = resolved['baseUrl'];
+        }
+      }
+    }
+
     // 5. Request-level variables (highest precedence)
     const overriddenKeys: string[] = [];
     if (Array.isArray(requestVariables)) {
@@ -493,6 +555,34 @@ export class VariableService {
       merged[key] = value;
     };
 
+    const extractAuthHeaderEntry = (authObj: any): { key: string; value: string } | undefined => {
+      const auth = authObj?.auth || authObj;
+      if (!auth || !auth.type || auth.type === 'none') {
+        return undefined;
+      }
+      if (auth.type === 'bearer' || auth.type === 'oauth2') {
+        const tokenValue = auth.token?.trim() ?? '';
+        if (!tokenValue) return undefined;
+        const header = auth.headerName?.trim() || 'Authorization';
+        const prefix = auth.headerPrefix !== undefined && auth.headerPrefix !== '' ? auth.headerPrefix.trim() : 'Bearer';
+        return { key: header, value: prefix ? `${prefix} ${tokenValue}` : tokenValue };
+      } else if (auth.type === 'apiKey') {
+        const tokenValue = auth.token?.trim() ?? '';
+        if (!tokenValue) return undefined;
+        const header = (auth.headerName && auth.headerName !== 'Authorization' ? auth.headerName.trim() : undefined) || auth.keyName?.trim() || auth.headerName?.trim() || 'X-API-Key';
+        return { key: header, value: tokenValue };
+      } else if (auth.type === 'basic') {
+        const header = auth.headerName?.trim() || 'Authorization';
+        const user = auth.username ?? '';
+        const pass = auth.password ?? auth.token ?? '';
+        if (user || pass) {
+          const encoded = Buffer.from(`${user}:${pass}`).toString('base64');
+          return { key: header, value: `Basic ${encoded}` };
+        }
+      }
+      return undefined;
+    };
+
     // 0a. Shared / Global profile headers (universal defaults)
     const globalProfile = this.stateManager.getProfile('global');
     if (globalProfile?.headers) {
@@ -506,6 +596,15 @@ export class VariableService {
             sourceName: 'Shared / Global',
           });
         }
+      });
+    }
+    const globalAuthEntry = extractAuthHeaderEntry(globalProfile?.auth);
+    if (globalAuthEntry) {
+      inherited.push({
+        key: globalAuthEntry.key,
+        value: globalAuthEntry.value,
+        source: 'profile',
+        sourceName: 'Shared / Global (Auth)',
       });
     }
 
@@ -527,6 +626,15 @@ export class VariableService {
           }
         });
       }
+      const profileAuthEntry = extractAuthHeaderEntry(profile?.auth);
+      if (profile && profileAuthEntry) {
+        inherited.push({
+          key: profileAuthEntry.key,
+          value: profileAuthEntry.value,
+          source: 'profile',
+          sourceName: `Profile: ${profile.name} (Auth)`,
+        });
+      }
     }
 
     // 1. Collection headers (collection defaults)
@@ -542,6 +650,15 @@ export class VariableService {
             sourceName: `Collection: ${collection.name}`,
           });
         }
+      });
+    }
+    const colAuthEntry = extractAuthHeaderEntry(collection?.auth);
+    if (collection && colAuthEntry) {
+      inherited.push({
+        key: colAuthEntry.key,
+        value: colAuthEntry.value,
+        source: 'collection',
+        sourceName: `Collection: ${collection.name} (Auth)`,
       });
     }
 
@@ -561,6 +678,15 @@ export class VariableService {
               sourceName: `Folder: ${folder.name}`,
             });
           }
+        });
+      }
+      const folderAuthEntry = extractAuthHeaderEntry(folder?.auth);
+      if (folder && folderAuthEntry) {
+        inherited.push({
+          key: folderAuthEntry.key,
+          value: folderAuthEntry.value,
+          source: 'folder',
+          sourceName: `Folder: ${folder.name} (Auth)`,
         });
       }
     }
@@ -584,6 +710,15 @@ export class VariableService {
               sourceName: sourceLabel,
             });
           }
+        });
+      }
+      const envAuthEntry = extractAuthHeaderEntry(env.auth);
+      if (envAuthEntry) {
+        inherited.push({
+          key: envAuthEntry.key,
+          value: envAuthEntry.value,
+          source: sourceKind,
+          sourceName: `${sourceLabel} (Auth)`,
         });
       }
     });

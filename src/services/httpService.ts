@@ -55,9 +55,12 @@ export class HttpService {
     const allConsoleLogs: ScriptConsoleLog[] = [];
     let testResults: TestResultItem[] = [];
 
+    const activeProfileId = this.stateManager.getActiveProfileId();
+    const resolvedProfileKey = params.profileId || params.profile || (activeProfileId && activeProfileId !== 'all' ? activeProfileId : undefined);
+
     // 1. Resolve combined variables
     let variables = this.variableService.resolveVariables(
-      params.profileId || params.profile,
+      resolvedProfileKey,
       params.environment,
       params.collection,
       params.folder,
@@ -67,8 +70,10 @@ export class HttpService {
 
     // 1.5. Pre-Request Script execution
     if (params.preRequestScript && params.preRequestScript.trim()) {
-      const activeEnvObj = params.environment ? this.stateManager.getEnvironment(params.environment) : undefined;
-      const colObj = params.collection ? this.stateManager.getCollection(params.collection) : undefined;
+      const envNameKey = params.environment ? (this.stateManager.getEnvironmentName(params.environment) || params.environment) : undefined;
+      const activeEnvObj = envNameKey ? this.stateManager.getEnvironment(envNameKey) : undefined;
+      const colKey = (params as any).collectionId || params.collection;
+      const colObj = colKey ? this.stateManager.getCollection(colKey) : undefined;
 
       const preResult = this.scriptService.executePreRequest(params.preRequestScript, {
         url: rawUrl,
@@ -86,27 +91,33 @@ export class HttpService {
       incomingBody = preResult.body;
       allConsoleLogs.push(...preResult.consoleLogs);
 
-      // Apply environment variable mutations if any
-      if (params.environment && activeEnvObj && Object.keys(preResult.envMutations).length > 0) {
-        activeEnvObj.variables = activeEnvObj.variables || {};
-        for (const [k, v] of Object.entries(preResult.envMutations)) {
-          if (v === null) {
-            delete activeEnvObj.variables[k];
-          } else {
-            activeEnvObj.variables[k] = v;
-          }
-        }
-        this.stateManager.saveEnvironment(params.environment, activeEnvObj);
+      let varsMutated = false;
 
-        // Re-resolve variables since environment changed
-        variables = this.variableService.resolveVariables(
-          params.profileId || params.profile,
-          params.environment,
-          params.collection,
-          params.folder,
-          params.variables,
-          (params as any).baseUrlPreference
-        );
+      // Apply environment variable mutations if any (strictly to the active environment)
+      if (Object.keys(preResult.envMutations).length > 0) {
+        if (envNameKey && activeEnvObj) {
+          activeEnvObj.variables = activeEnvObj.variables || {};
+          for (const [k, v] of Object.entries(preResult.envMutations)) {
+            if (v === null) {
+              delete activeEnvObj.variables[k];
+            } else {
+              activeEnvObj.variables[k] = v;
+            }
+          }
+          this.stateManager.saveEnvironment(envNameKey, activeEnvObj);
+          varsMutated = true;
+          allConsoleLogs.push({
+            level: 'info',
+            message: `[Pre-Request] Saved variable(s) [${Object.keys(preResult.envMutations).join(', ')}] to active Environment "${envNameKey}"`,
+            timestamp: Date.now(),
+          });
+        } else {
+          allConsoleLogs.push({
+            level: 'warn',
+            message: `[Pre-Request] environment.set() called for [${Object.keys(preResult.envMutations).join(', ')}], but no active Environment is selected. Select an Environment or use collection.set() to save to the parent Collection.`,
+            timestamp: Date.now(),
+          });
+        }
       }
 
       // Apply collection variable mutations if any
@@ -120,6 +131,23 @@ export class HttpService {
           }
         }
         this.stateManager.saveCollection(colObj);
+        varsMutated = true;
+        allConsoleLogs.push({
+          level: 'info',
+          message: `[Pre-Request] Saved collection variable(s) [${Object.keys(preResult.colMutations).join(', ')}] to Collection "${colObj.name}"`,
+          timestamp: Date.now(),
+        });
+      }
+
+      if (varsMutated) {
+        variables = this.variableService.resolveVariables(
+          resolvedProfileKey,
+          params.environment,
+          colKey,
+          params.folder,
+          params.variables,
+          (params as any).baseUrlPreference
+        );
       }
     }
 
@@ -129,12 +157,12 @@ export class HttpService {
       params.collection,
       params.folder,
       incomingHeaders,
-      params.profileId || params.profile
+      resolvedProfileKey
     );
 
     // 3. Resolve Auth headers
     const authHeaders = this.authService.resolveAuthHeaders(
-      params.profileId || params.profile,
+      resolvedProfileKey,
       params.environment,
       params.collection,
       params.folder,
@@ -295,8 +323,10 @@ export class HttpService {
 
       // 5. Post-Response Script execution
       if (params.postResponseScript && params.postResponseScript.trim()) {
-        const activeEnvObj = params.environment ? this.stateManager.getEnvironment(params.environment) : undefined;
-        const colObj = params.collection ? this.stateManager.getCollection(params.collection) : undefined;
+        const envNameKey = params.environment ? (this.stateManager.getEnvironmentName(params.environment) || params.environment) : undefined;
+        const activeEnvObj = envNameKey ? this.stateManager.getEnvironment(envNameKey) : undefined;
+        const colKey = (params as any).collectionId || params.collection;
+        const colObj = colKey ? this.stateManager.getCollection(colKey) : undefined;
 
         const postResult = this.scriptService.executePostResponse(params.postResponseScript, {
           url: finalUrl,
@@ -316,17 +346,30 @@ export class HttpService {
         testResults = postResult.testResults;
         allConsoleLogs.push(...postResult.consoleLogs);
 
-        // Apply environment variable mutations if any
-        if (params.environment && activeEnvObj && Object.keys(postResult.envMutations).length > 0) {
-          activeEnvObj.variables = activeEnvObj.variables || {};
-          for (const [k, v] of Object.entries(postResult.envMutations)) {
-            if (v === null) {
-              delete activeEnvObj.variables[k];
-            } else {
-              activeEnvObj.variables[k] = v;
+        // Apply environment variable mutations if any (strictly to the active environment)
+        if (Object.keys(postResult.envMutations).length > 0) {
+          if (envNameKey && activeEnvObj) {
+            activeEnvObj.variables = activeEnvObj.variables || {};
+            for (const [k, v] of Object.entries(postResult.envMutations)) {
+              if (v === null) {
+                delete activeEnvObj.variables[k];
+              } else {
+                activeEnvObj.variables[k] = v;
+              }
             }
+            this.stateManager.saveEnvironment(envNameKey, activeEnvObj);
+            allConsoleLogs.push({
+              level: 'info',
+              message: `[Post-Response] Saved variable(s) [${Object.keys(postResult.envMutations).join(', ')}] to active Environment "${envNameKey}"`,
+              timestamp: Date.now(),
+            });
+          } else {
+            allConsoleLogs.push({
+              level: 'warn',
+              message: `[Post-Response] environment.set() called for [${Object.keys(postResult.envMutations).join(', ')}], but no active Environment is selected. Select an Environment or use collection.set() to save to the parent Collection.`,
+              timestamp: Date.now(),
+            });
           }
-          this.stateManager.saveEnvironment(params.environment, activeEnvObj);
         }
 
         // Apply collection variable mutations if any
@@ -340,6 +383,11 @@ export class HttpService {
             }
           }
           this.stateManager.saveCollection(colObj);
+          allConsoleLogs.push({
+            level: 'info',
+            message: `[Post-Response] Saved collection variable(s) [${Object.keys(postResult.colMutations).join(', ')}] to Collection "${colObj.name}"`,
+            timestamp: Date.now(),
+          });
         }
       }
 
