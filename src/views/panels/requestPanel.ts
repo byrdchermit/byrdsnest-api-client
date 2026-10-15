@@ -87,6 +87,7 @@ export class BlueByrdPanel {
           postResponseScript: savedReq.postResponseScript ?? hydratedContext.postResponseScript,
           baseUrlPreference: savedReq.baseUrlPreference ?? hydratedContext.baseUrlPreference,
           openApiDocs: savedReq.openApiDocs ?? hydratedContext.openApiDocs,
+          queryParams: savedReq.queryParams ?? hydratedContext.queryParams,
         };
       }
     }
@@ -397,6 +398,7 @@ export class BlueByrdPanel {
               preRequestScript: payload.preRequestScript,
               postResponseScript: payload.postResponseScript,
               openApiDocs: payload.openApiDocs ?? this.initialContext?.openApiDocs,
+              queryParams: payload.queryParams,
             };
 
             const saved = this.stateManager.saveRequest(savedItem, payload.collection, payload.folder);

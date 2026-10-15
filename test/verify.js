@@ -5189,7 +5189,62 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     console.log('✓ Collection Base URL port/host composition & folder creation options verified');
   }
 
-  console.log('\nAll 70 verification test suites passed successfully! 🎉');
+  // Suite 71: Request Panel Params Tab (Query Parameters & Path Variables) & StateManager Persistence
+  {
+    const stateManager = new BlueByrdStateManager(mockContext);
+    const mockRequest = {
+      id: 'req-params-test',
+      name: 'Query & Path Params Test',
+      method: 'GET',
+      url: 'https://api.example.com/users/:userId/posts?limit=25&active=true',
+      headers: { 'Accept': 'application/json' },
+      bodyType: 'none',
+      body: '',
+      queryParams: [
+        { key: 'limit', value: '25', enabled: true, description: 'Page limit' },
+        { key: 'active', value: 'true', enabled: true, description: 'Filter active items' },
+        { key: 'debug', value: '1', enabled: false, description: 'Debug flag' }
+      ]
+    };
+
+    // 1. Save and retrieve request with queryParams in StateManager
+    stateManager.saveRequest(mockRequest, 'col-params', 'folder-params');
+    const loaded = stateManager.getRequest('req-params-test');
+    assert(loaded, 'Request result must be found by id');
+    const loadedReq = loaded.request;
+    assert(Array.isArray(loadedReq.queryParams), 'loadedReq.queryParams must be an array');
+    assert.strictEqual(loadedReq.queryParams.length, 3, 'queryParams length must be preserved');
+    assert.strictEqual(loadedReq.queryParams[0].key, 'limit');
+    assert.strictEqual(loadedReq.queryParams[0].value, '25');
+    assert.strictEqual(loadedReq.queryParams[0].enabled, true);
+    assert.strictEqual(loadedReq.queryParams[0].description, 'Page limit');
+    assert.strictEqual(loadedReq.queryParams[2].enabled, false);
+
+    // 2. Verify Request Panel HTML renders Params tab, badges, and query parameter DOM elements
+    const html = getRequestPanelHtml({
+      requestId: loadedReq.id,
+      requestName: loadedReq.name,
+      method: loadedReq.method,
+      url: loadedReq.url,
+      headers: loadedReq.headers,
+      bodyType: loadedReq.bodyType,
+      body: loadedReq.body,
+      queryParams: loadedReq.queryParams
+    }, stateManager.getState());
+
+    assert(html.includes('data-tab="tab-query-params"'), 'HTML must include Params tab button');
+    assert(html.includes('id="tab-query-params"'), 'HTML must include tab-query-params container');
+    assert(html.includes('id="query-param-rows"'), 'HTML must include query-param-rows container');
+    assert(html.includes('id="btn-add-query-param"'), 'HTML must include + Add Parameter button');
+    assert(html.includes('id="query-param-badge"'), 'HTML must include query-param-badge element');
+    assert(html.includes('id="req-header-badge"'), 'HTML must include req-header-badge element');
+    assert(html.includes('id="path-vars-section"'), 'HTML must include path-vars-section container');
+    assert(html.includes('id="path-var-rows"'), 'HTML must include path-var-rows container');
+
+    console.log('✓ Request Panel Params Tab (Query Parameters & Path Variables) & StateManager Persistence verified');
+  }
+
+  console.log('\nAll 71 verification test suites passed successfully! 🎉');
   process.exit(0);
 })().catch(err => {
   console.error('Async test suite failure:', err);

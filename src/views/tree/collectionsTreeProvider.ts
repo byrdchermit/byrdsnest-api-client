@@ -355,6 +355,7 @@ export class BlueByrdCollectionsTreeProvider
       postResponseScript: req.postResponseScript,
       baseUrlPreference: req.baseUrlPreference,
       openApiDocs: req.openApiDocs,
+      queryParams: req.queryParams,
     };
 
     const reqItem = new BlueByrdTreeItem(

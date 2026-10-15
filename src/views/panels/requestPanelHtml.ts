@@ -914,6 +914,35 @@ export function getRequestPanelHtml(
       align-items: center;
       margin-bottom: 6px;
     }
+    .query-param-row {
+      display: grid;
+      grid-template-columns: 28px 1fr 1fr 1fr 32px;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .path-var-row {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .path-var-badge {
+      display: inline-flex;
+      align-items: center;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--primary);
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      border-radius: 3px;
+      padding: 4px 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .param-input {
       width: 100%;
       background: var(--surface);
@@ -2630,16 +2659,34 @@ export function getRequestPanelHtml(
       <!-- Request Builder -->
       <div class="panel-box">
         <div class="tab-header">
-          <button class="tab-btn active" data-tab="tab-params">Variables</button>
-          <button class="tab-btn" data-tab="tab-headers">Headers</button>
+          <button class="tab-btn active" data-tab="tab-query-params">Params <span id="query-param-badge" class="meta-tag" style="display:none; margin-left:4px; font-size:10px; padding:1px 5px;"></span></button>
+          <button class="tab-btn" data-tab="tab-headers">Headers <span id="req-header-badge" class="meta-tag" style="display:none; margin-left:4px; font-size:10px; padding:1px 5px;"></span></button>
           <button class="tab-btn" data-tab="tab-body">Body</button>
           <button class="tab-btn" data-tab="tab-auth">Auth</button>
+          <button class="tab-btn" data-tab="tab-params">Variables</button>
           <button class="tab-btn" data-tab="tab-scripts">Scripts</button>
           <button class="tab-btn" data-tab="tab-notes">Docs &amp; Notes${context.openApiDocs ? ' <span class="openapi-tab-pill">OpenAPI</span>' : ''}</button>
         </div>
 
+        <!-- Tab: Query & Path Parameters -->
+        <div id="tab-query-params" class="tab-content active">
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px;">Query Parameters</span>
+              <button id="btn-add-query-param" class="btn btn-secondary" style="font-size: 11px; padding: 3px 10px;">+ Add Parameter</button>
+            </div>
+            <div id="query-param-rows"></div>
+          </div>
+
+          <!-- Path Variables Section (Auto-detected from URL) -->
+          <div id="path-vars-section" style="margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; display: none;">
+            <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.5px;">Path Variables <span style="font-size: 10px; text-transform: none; opacity: 0.7; font-weight: normal;">(Auto-detected from URL :param, {param}, or {{param}})</span></div>
+            <div id="path-var-rows"></div>
+          </div>
+        </div>
+
         <!-- Tab: Variables -->
-        <div id="tab-params" class="tab-content active">
+        <div id="tab-params" class="tab-content">
           <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.5px;">Request Variables</div>
           <div id="var-rows"></div>
           <div style="margin-top: 8px;">
@@ -2992,6 +3039,7 @@ export function getRequestPanelHtml(
     let initialBody = ${JSON.stringify(context.body || '').replace(/</g, '\\u003c')};
     let initialBodyFormData = ${JSON.stringify(context.bodyFormData || []).replace(/</g, '\\u003c')};
     const initialOpenApiDocs = ${JSON.stringify(context.openApiDocs || null).replace(/</g, '\\u003c')};
+    const initialQueryParams = ${JSON.stringify(context.queryParams || []).replace(/</g, '\\u003c')};
     const activeCollection = ${JSON.stringify(context.collection || state.collections[0]?.name || 'Demo Collection').replace(/</g, '\\u003c')};
     const activeFolder = ${JSON.stringify(context.folder && context.folder !== 'Root' ? context.folder : '').replace(/</g, '\\u003c')};
 
@@ -3094,6 +3142,11 @@ export function getRequestPanelHtml(
     });
 
     // DOM Containers
+    const queryParamRowsContainer = document.getElementById('query-param-rows');
+    const pathVarsSection = document.getElementById('path-vars-section');
+    const pathVarRowsContainer = document.getElementById('path-var-rows');
+    const queryParamBadge = document.getElementById('query-param-badge');
+    const reqHeaderBadge = document.getElementById('req-header-badge');
     const varRowsContainer = document.getElementById('var-rows');
     const headerRowsContainer = document.getElementById('header-rows');
     const inheritedVarsContainer = document.getElementById('inherited-var-rows');
@@ -4136,15 +4189,322 @@ export function getRequestPanelHtml(
       });
     }
 
-    // Wire URL input → live preview & backdrop scroll
+    // Wire URL input → live preview, two-way query params sync & backdrop scroll
     const urlInputEl = document.getElementById('url-input');
     if (urlInputEl) {
-      urlInputEl.addEventListener('input', () => updateUrlPreview());
+      urlInputEl.addEventListener('input', () => {
+        syncQueryParamsFromUrl();
+        updateUrlPreview();
+      });
       urlInputEl.addEventListener('scroll', () => {
         const backdrop = document.getElementById('url-highlight-backdrop');
         if (backdrop) backdrop.scrollLeft = urlInputEl.scrollLeft;
       });
     }
+
+    // ==========================================
+    // Query Parameters & Path Variables Management
+    // ==========================================
+    let isSyncingFromParams = false;
+    let isSyncingFromUrl = false;
+
+    function updateQueryParamBadge() {
+      if (!queryParamBadge || !queryParamRowsContainer) return;
+      const count = Array.from(queryParamRowsContainer.querySelectorAll('.query-param-row')).filter(r => {
+        const k = r.querySelector('[data-role="key"]')?.value.trim();
+        const en = r.querySelector('[data-role="enabled"]')?.checked;
+        return en && k;
+      }).length;
+      if (count > 0) {
+        queryParamBadge.textContent = count;
+        queryParamBadge.style.display = 'inline-block';
+      } else {
+        queryParamBadge.style.display = 'none';
+      }
+    }
+
+    function updateHeaderBadge() {
+      if (!reqHeaderBadge || !headerRowsContainer) return;
+      const count = Array.from(headerRowsContainer.querySelectorAll('.param-row')).filter(r => {
+        const k = r.querySelector('[data-role="key"]')?.value.trim();
+        const en = r.querySelector('[data-role="enabled"]')?.checked;
+        return en && k;
+      }).length;
+      if (count > 0) {
+        reqHeaderBadge.textContent = count;
+        reqHeaderBadge.style.display = 'inline-block';
+      } else {
+        reqHeaderBadge.style.display = 'none';
+      }
+    }
+
+    function parseQueryStringToParams(url) {
+      if (!url || typeof url !== 'string') return [];
+      const qIdx = url.indexOf('?');
+      if (qIdx < 0) return [];
+      const qs = url.substring(qIdx + 1);
+      if (!qs.trim()) return [];
+      const pairs = qs.split('&').filter(Boolean);
+      return pairs.map(p => {
+        const eqIdx = p.indexOf('=');
+        const rawKey = eqIdx >= 0 ? p.substring(0, eqIdx) : p;
+        const rawVal = eqIdx >= 0 ? p.substring(eqIdx + 1) : '';
+        let key = rawKey;
+        let val = rawVal;
+        try { key = decodeURIComponent(rawKey); } catch {}
+        if (!val.startsWith('{{') || !val.endsWith('}}')) {
+          try { val = decodeURIComponent(rawVal); } catch {}
+        }
+        return { key, value: val, enabled: true, description: '' };
+      });
+    }
+
+    function addQueryParamRow(key = '', value = '', enabled = true, description = '') {
+      if (!queryParamRowsContainer) return null;
+      const row = document.createElement('div');
+      row.className = 'query-param-row';
+      row.innerHTML = \`
+        <input type="checkbox" \${enabled ? 'checked' : ''} data-role="enabled" style="cursor: pointer;" title="Enable/disable parameter" />
+        <input class="param-input" type="text" placeholder="Key" value="\${safeEscape(key)}" data-role="key" />
+        <input class="param-input" type="text" placeholder="Value" value="\${safeEscape(value)}" data-role="value" />
+        <input class="param-input" type="text" placeholder="Description (optional)" value="\${safeEscape(description)}" data-role="desc" />
+        <button class="icon-btn" title="Delete parameter" data-role="delete">✕</button>
+      \`;
+
+      row.querySelector('[data-role="delete"]').addEventListener('click', () => {
+        row.remove();
+        syncUrlFromQueryParams();
+        updateQueryParamBadge();
+        checkDirtyState();
+      });
+
+      row.querySelectorAll('input').forEach(input => {
+        input.addEventListener('input', () => {
+          if (input.getAttribute('data-role') !== 'desc') {
+            syncUrlFromQueryParams();
+          }
+          updateQueryParamBadge();
+          checkDirtyState();
+        });
+        input.addEventListener('change', () => {
+          if (input.getAttribute('data-role') !== 'desc') {
+            syncUrlFromQueryParams();
+          }
+          updateQueryParamBadge();
+          checkDirtyState();
+        });
+      });
+
+      queryParamRowsContainer.appendChild(row);
+      updateQueryParamBadge();
+      return row;
+    }
+
+    function syncUrlFromQueryParams() {
+      if (isSyncingFromUrl || !queryParamRowsContainer) return;
+      isSyncingFromParams = true;
+      try {
+        const urlInput = document.getElementById('url-input');
+        if (!urlInput) return;
+        const currentUrl = urlInput.value;
+        const qIdx = currentUrl.indexOf('?');
+        const basePart = qIdx >= 0 ? currentUrl.substring(0, qIdx) : currentUrl;
+
+        const rows = Array.from(queryParamRowsContainer.querySelectorAll('.query-param-row'));
+        const pairs = [];
+        for (const r of rows) {
+          const en = r.querySelector('[data-role="enabled"]')?.checked;
+          const k = r.querySelector('[data-role="key"]')?.value || '';
+          const v = r.querySelector('[data-role="value"]')?.value || '';
+          if (en && k.trim()) {
+            const encKey = encodeURIComponent(k.trim());
+            let encVal = '';
+            if (v.startsWith('{{') && v.endsWith('}}')) {
+              encVal = v;
+            } else {
+              encVal = encodeURIComponent(v);
+            }
+            pairs.push(encKey + (v !== '' ? '=' + encVal : ''));
+          }
+        }
+
+        const newUrl = pairs.length > 0 ? (basePart + '?' + pairs.join('&')) : basePart;
+        if (urlInput.value !== newUrl) {
+          urlInput.value = newUrl;
+          updateUrlPreview();
+          refreshAllVariableHighlights();
+        }
+        detectPathVariables();
+      } finally {
+        isSyncingFromParams = false;
+      }
+    }
+
+    function syncQueryParamsFromUrl() {
+      if (isSyncingFromParams || !queryParamRowsContainer) return;
+      isSyncingFromUrl = true;
+      try {
+        const urlInput = document.getElementById('url-input');
+        if (!urlInput) return;
+        const currentUrl = urlInput.value;
+        const parsed = parseQueryStringToParams(currentUrl);
+
+        const existingRows = Array.from(queryParamRowsContainer.querySelectorAll('.query-param-row'));
+        const existingMap = new Map();
+        for (const r of existingRows) {
+          const k = r.querySelector('[data-role="key"]')?.value.trim();
+          const v = r.querySelector('[data-role="value"]')?.value;
+          const en = r.querySelector('[data-role="enabled"]')?.checked;
+          const d = r.querySelector('[data-role="desc"]')?.value;
+          if (k) {
+            if (!existingMap.has(k)) existingMap.set(k, []);
+            existingMap.get(k).push({ key: k, value: v, enabled: en, description: d });
+          }
+        }
+
+        const currentEnabledInTable = existingRows
+          .filter(r => r.querySelector('[data-role="enabled"]')?.checked && r.querySelector('[data-role="key"]')?.value.trim())
+          .map(r => ({
+            key: r.querySelector('[data-role="key"]')?.value.trim(),
+            value: r.querySelector('[data-role="value"]')?.value || ''
+          }));
+
+        const urlMatchesTable = parsed.length === currentEnabledInTable.length &&
+          parsed.every((p, i) => p.key === currentEnabledInTable[i].key && p.value === currentEnabledInTable[i].value);
+
+        if (!urlMatchesTable) {
+          const disabledRowsData = existingRows
+            .filter(r => !r.querySelector('[data-role="enabled"]')?.checked)
+            .map(r => ({
+              key: r.querySelector('[data-role="key"]')?.value || '',
+              value: r.querySelector('[data-role="value"]')?.value || '',
+              enabled: false,
+              description: r.querySelector('[data-role="desc"]')?.value || ''
+            }));
+
+          queryParamRowsContainer.innerHTML = '';
+
+          for (const p of parsed) {
+            const existingList = existingMap.get(p.key);
+            const match = existingList && existingList.shift();
+            addQueryParamRow(p.key, p.value, true, match ? match.description : '');
+          }
+
+          for (const d of disabledRowsData) {
+            addQueryParamRow(d.key, d.value, false, d.description);
+          }
+        }
+
+        detectPathVariables();
+        updateQueryParamBadge();
+      } finally {
+        isSyncingFromUrl = false;
+      }
+    }
+
+    function detectPathVariables() {
+      if (!pathVarsSection || !pathVarRowsContainer) return;
+      const urlInput = document.getElementById('url-input');
+      if (!urlInput) return;
+      const rawUrl = urlInput.value.trim();
+      const qIdx = rawUrl.indexOf('?');
+      const pathPart = qIdx >= 0 ? rawUrl.substring(0, qIdx) : rawUrl;
+
+      const tokens = [];
+      const tokenSet = new Set();
+
+      const colonRe = /(^|\\/):([a-zA-Z0-9_]+)/g;
+      let m;
+      while ((m = colonRe.exec(pathPart)) !== null) {
+        const t = m[2];
+        if (!tokenSet.has(t)) {
+          tokenSet.add(t);
+          tokens.push({ name: t, raw: ':' + t });
+        }
+      }
+
+      const curlyRe = /\\{\\{?([a-zA-Z0-9_]+)\\}?\\}/g;
+      while ((m = curlyRe.exec(pathPart)) !== null) {
+        const t = m[1];
+        const lower = t.toLowerCase();
+        if (lower === 'baseurl' || lower === 'envbaseurl' || lower === 'collectionbaseurl') continue;
+        if (!tokenSet.has(t)) {
+          tokenSet.add(t);
+          tokens.push({ name: t, raw: m[0] });
+        }
+      }
+
+      if (tokens.length === 0) {
+        pathVarsSection.style.display = 'none';
+        pathVarRowsContainer.innerHTML = '';
+        return;
+      }
+
+      pathVarsSection.style.display = 'block';
+
+      const existingValues = new Map();
+      Array.from(pathVarRowsContainer.querySelectorAll('.path-var-row')).forEach(r => {
+        const name = r.getAttribute('data-var-name');
+        const input = r.querySelector('[data-role="value"]');
+        if (name && input) {
+          existingValues.set(name, input.value);
+        }
+      });
+
+      const reqVars = getVariables();
+      const reqVarMap = new Map();
+      reqVars.forEach(v => reqVarMap.set(v.name, v.value));
+
+      pathVarRowsContainer.innerHTML = '';
+      tokens.forEach(tok => {
+        const row = document.createElement('div');
+        row.className = 'path-var-row';
+        row.setAttribute('data-var-name', tok.name);
+
+        let currentVal = existingValues.has(tok.name) ? existingValues.get(tok.name) : (reqVarMap.get(tok.name) || '');
+
+        row.innerHTML = \`
+          <div class="path-var-badge" title="Path parameter: \${safeEscape(tok.raw)}">\${safeEscape(tok.raw)}</div>
+          <input class="param-input" type="text" placeholder="Value (or sets {{\${safeEscape(tok.name)}}})" value="\${safeEscape(currentVal)}" data-role="value" />
+        \`;
+
+        const valInput = row.querySelector('[data-role="value"]');
+        valInput.addEventListener('input', () => {
+          upsertRequestVariable(tok.name, valInput.value);
+          updateUrlPreview();
+          checkDirtyState();
+        });
+
+        pathVarRowsContainer.appendChild(row);
+      });
+    }
+
+    function getQueryParams() {
+      if (!queryParamRowsContainer) return [];
+      return Array.from(queryParamRowsContainer.querySelectorAll('.query-param-row')).map(r => ({
+        key: r.querySelector('[data-role="key"]')?.value.trim() || '',
+        value: r.querySelector('[data-role="value"]')?.value || '',
+        enabled: !!r.querySelector('[data-role="enabled"]')?.checked,
+        description: r.querySelector('[data-role="desc"]')?.value || ''
+      })).filter(r => r.key || r.value);
+    }
+
+    const btnAddQueryParam = document.getElementById('btn-add-query-param');
+    if (btnAddQueryParam) {
+      btnAddQueryParam.addEventListener('click', () => {
+        const row = addQueryParamRow('', '', true, '');
+        row?.querySelector('[data-role="key"]')?.focus();
+      });
+    }
+
+    // Populate initial query parameters
+    if (initialQueryParams && initialQueryParams.length > 0) {
+      initialQueryParams.forEach(p => addQueryParamRow(p.key, p.value, p.enabled !== false, p.description || ''));
+    } else if (urlInputEl && urlInputEl.value.includes('?')) {
+      syncQueryParamsFromUrl();
+    }
+    detectPathVariables();
+    updateQueryParamBadge();
 
     // Variables UI Builder
     function addVarRow(name = '', value = '', enabled = true, hidden = false) {
@@ -4221,16 +4581,19 @@ export function getRequestPanelHtml(
         row.remove();
         renderInheritedHeaders();
         refreshAllVariableHighlights();
+        updateHeaderBadge();
       });
 
       row.querySelectorAll('input').forEach(input => {
         input.addEventListener('input', () => {
           renderInheritedHeaders();
           refreshAllVariableHighlights();
+          updateHeaderBadge();
         });
         input.addEventListener('change', () => {
           renderInheritedHeaders();
           refreshAllVariableHighlights();
+          updateHeaderBadge();
         });
       });
 
@@ -4239,6 +4602,7 @@ export function getRequestPanelHtml(
       }
       updateRowVariableHighlight(row);
       renderInheritedHeaders();
+      updateHeaderBadge();
       return row;
     }
 
@@ -4254,6 +4618,7 @@ export function getRequestPanelHtml(
     } else {
       addHeaderRow('Accept', 'application/json', true);
     }
+    updateHeaderBadge();
 
     // Wire Auth and Body Variable Highlighting
     const tabAuthEl = document.getElementById('tab-auth');
@@ -4817,7 +5182,8 @@ export function getRequestPanelHtml(
         notes: document.getElementById('req-notes').value,
         preRequestScript: document.getElementById('req-pre-script')?.value || '',
         postResponseScript: document.getElementById('req-post-script')?.value || '',
-        openApiDocs: initialOpenApiDocs || undefined
+        openApiDocs: initialOpenApiDocs || undefined,
+        queryParams: getQueryParams()
       };
     }
 
@@ -5884,6 +6250,7 @@ export function getRequestPanelHtml(
           url: document.getElementById('url-input')?.value,
           headers: getHeaders(),
           variables: getVariables(),
+          queryParams: getQueryParams(),
           bodyInfo: getBodyPayload(),
           notes: document.getElementById('req-notes')?.value,
           preScript: document.getElementById('req-pre-script')?.value,
@@ -5955,6 +6322,14 @@ export function getRequestPanelHtml(
         if (state.postScript !== undefined) {
           const pos = document.getElementById('req-post-script');
           if (pos) pos.value = state.postScript;
+        }
+
+        // Query Parameters
+        if (state.queryParams && queryParamRowsContainer) {
+          queryParamRowsContainer.innerHTML = '';
+          state.queryParams.forEach(p => addQueryParamRow(p.key, p.value, p.enabled !== false, p.description || ''));
+          updateQueryParamBadge();
+          detectPathVariables();
         }
 
         // Headers
@@ -6313,6 +6688,7 @@ export function getRequestPanelHtml(
         updatedPairs.push(newPair);
       }
       urlInput.value = basePart + '?' + updatedPairs.join('&');
+      syncQueryParamsFromUrl();
       updateUrlPreview();
       refreshAllVariableHighlights();
     }

@@ -10,11 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-10-14
 
 ### Added
+- **Dedicated Params Tab (Query Parameters & Path Variables)**:
+  - Added a first-class **Params** tab to the Request Builder to manage query parameters and path variables with two-way URL synchronization.
+  - Full parameter table with enable/disable checkboxes, key, value, optional description, and row deletion.
+  - Live two-way synchronization: typing in the URL immediately populates the parameter table, and editing or toggling parameters automatically updates the URL query string.
+  - Automatic path variable detection for both colon (`:param`) and mustache (`{{param}}`) syntax, with inline value inputs that bind directly to request variables and update the URL preview in real-time.
+  - Dynamic count badge on the **Params** and **Headers** tabs indicating active parameter and header counts.
+  - Full request-level persistence across saves, reloads, and undo/redo history.
 - **Interactive OpenAPI 3.0 / 3.1 & Swagger 2.0 Reference in Request Panel**:
   - Full `$ref` schema resolution for request bodies, path parameters, query parameters, headers, and responses across complex OpenAPI specifications.
   - Dedicated **Docs & Notes [OpenAPI]** tab with a high-fidelity interactive reference browser:
     - Parameter cards with data types, format annotations (`uuid`, `date-time`, etc.), required badges, deprecation warnings, and interactive enum dropdown pickers.
-    - One-click insertion buttons: `+ Query` (appends parameter to URL), `+ {{Var}}` (appends variable-templated parameter), `+ Set {{Var}}` (sets path variable in request), and `+ Header`.
+    - One-click insertion buttons: `+ Query` (appends parameter to URL and syncs to Params tab), `+ {{Var}}` (appends variable-templated parameter), `+ Set {{Var}}` (sets path variable in request), and `+ Header`.
     - Auto-generated request body examples with `⚡ OpenAPI Example` and `Copy Example` buttons.
     - Status code response documentation (`200 OK`, `401 Unauthorized`, etc.) including header tables and response model schemas.
 - **Environment & Collection Base URL Composition**:

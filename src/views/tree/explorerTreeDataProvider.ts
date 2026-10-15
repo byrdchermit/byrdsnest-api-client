@@ -369,6 +369,7 @@ export class BlueByrdExplorerTreeDataProvider
       postResponseScript: req.postResponseScript,
       baseUrlPreference: req.baseUrlPreference,
       openApiDocs: req.openApiDocs,
+      queryParams: req.queryParams,
     };
 
     return new BlueByrdTreeItem(

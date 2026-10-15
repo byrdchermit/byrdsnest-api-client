@@ -308,6 +308,7 @@ export class BlueByrdStateManager {
                       postResponseScript: r.postResponseScript,
                       baseUrlPreference: r.baseUrlPreference,
                       openApiDocs: r.openApiDocs,
+                      queryParams: Array.isArray(r.queryParams) ? r.queryParams : undefined,
                     }))
                   : [];
                 return {
@@ -356,6 +357,7 @@ export class BlueByrdStateManager {
                   postResponseScript: r.postResponseScript,
                   baseUrlPreference: r.baseUrlPreference,
                   openApiDocs: r.openApiDocs,
+                  queryParams: Array.isArray(r.queryParams) ? r.queryParams : undefined,
                 }))
             : [];
 
@@ -1326,6 +1328,9 @@ export class BlueByrdStateManager {
         if (normalizedRequest.openApiDocs === undefined && folder.requests[reqIdx].openApiDocs) {
           normalizedRequest.openApiDocs = folder.requests[reqIdx].openApiDocs;
         }
+        if (normalizedRequest.queryParams === undefined && folder.requests[reqIdx].queryParams) {
+          normalizedRequest.queryParams = folder.requests[reqIdx].queryParams;
+        }
         folder.requests[reqIdx] = normalizedRequest;
       } else {
         folder.requests.push(normalizedRequest);
@@ -1342,6 +1347,9 @@ export class BlueByrdStateManager {
       if (reqIdx >= 0) {
         if (normalizedRequest.openApiDocs === undefined && collection.requests[reqIdx].openApiDocs) {
           normalizedRequest.openApiDocs = collection.requests[reqIdx].openApiDocs;
+        }
+        if (normalizedRequest.queryParams === undefined && collection.requests[reqIdx].queryParams) {
+          normalizedRequest.queryParams = collection.requests[reqIdx].queryParams;
         }
         collection.requests[reqIdx] = normalizedRequest;
       } else {

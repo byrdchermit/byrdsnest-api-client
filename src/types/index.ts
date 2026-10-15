@@ -136,6 +136,14 @@ export type RequestContext = {
   postResponseScript?: string;
   baseUrlPreference?: 'collection' | 'environment' | 'none';
   openApiDocs?: OpenApiOperationDocs;
+  queryParams?: QueryParamItem[];
+};
+
+export type QueryParamItem = {
+  key: string;
+  value: string;
+  enabled: boolean;
+  description?: string;
 };
 
 export type BodyType = 'none' | 'json' | 'form-urlencoded' | 'form-data' | 'text' | 'xml' | 'raw';
@@ -204,6 +212,7 @@ export type RequestItem = {
   postResponseScript?: string;
   baseUrlPreference?: 'collection' | 'environment' | 'none';
   openApiDocs?: OpenApiOperationDocs;
+  queryParams?: QueryParamItem[];
 };
 
 export type TestResultItem = {
