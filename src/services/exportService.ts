@@ -55,6 +55,55 @@ export class ExportService {
   }
 
   /**
+   * Safely retrieves a nested property value using dot-notation path (e.g. "Capabilities.SupportsMediaControl").
+   */
+  public static getNestedValue(obj: any, path: string): any {
+    if (!obj || typeof obj !== 'object') return undefined;
+    if (Object.prototype.hasOwnProperty.call(obj, path)) return obj[path];
+    const parts = path.split('.');
+    let curr = obj;
+    for (let i = 0; i < parts.length; i++) {
+      if (curr === null || curr === undefined || typeof curr !== 'object') return undefined;
+      curr = curr[parts[i]];
+    }
+    return curr;
+  }
+
+  /**
+   * Recursively discovers flattened dot-notation keys for sub-objects, preserving arrays as atomic objects.
+   */
+  public static collectFlattenedKeys(
+    obj: any,
+    prefix: string,
+    targetSet: Set<string>,
+    visited = new Set<any>(),
+    maxDepth = 8
+  ): void {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+    if (visited.has(obj) || maxDepth <= 0) {
+      if (prefix) targetSet.add(prefix);
+      return;
+    }
+    visited.add(obj);
+
+    const keys = Object.keys(obj);
+    if (keys.length === 0 && prefix) {
+      targetSet.add(prefix);
+      return;
+    }
+
+    for (const k of keys) {
+      const fullKey = prefix ? `${prefix}.${k}` : k;
+      const val = obj[k];
+      if (val !== null && typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length > 0) {
+        this.collectFlattenedKeys(val, fullKey, targetSet, visited, maxDepth - 1);
+      } else {
+        targetSet.add(fullKey);
+      }
+    }
+  }
+
+  /**
    * Creates a valid, zero-dependency ZIP archive Buffer from file entries using standard DEFLATE.
    */
   public static createZipArchive(files: Array<{ name: string; data: Buffer | string }>): Buffer {
@@ -248,10 +297,10 @@ export class ExportService {
       const rootHeadersSet = new Set<string>();
       const rootRows: any[][] = [];
 
-      // Discover all keys across all items
+      // Discover all keys across all items (flattened sub-objects)
       json.forEach((item) => {
         if (item && typeof item === 'object' && !Array.isArray(item)) {
-          Object.keys(item).forEach((k) => rootHeadersSet.add(k));
+          this.collectFlattenedKeys(item, '', rootHeadersSet);
         }
       });
 
@@ -266,7 +315,7 @@ export class ExportService {
           const parentIdentifier = item.id || item.name || item.key || `#${parentIdx + 1}`;
 
           rootHeaders.forEach((h) => {
-            const val = item[h];
+            const val = this.getNestedValue(item, h);
             if (Array.isArray(val)) {
               rowVals.push(`[${val.length} ${val.length === 1 ? 'item' : 'items'}]`);
               if (val.length > 0) {
@@ -377,7 +426,7 @@ export class ExportService {
       const headersSet = new Set<string>();
       items.forEach((item) => {
         if (item && typeof item === 'object' && !Array.isArray(item)) {
-          Object.keys(item).forEach((k) => headersSet.add(k));
+          this.collectFlattenedKeys(item, '', headersSet);
         }
       });
 
@@ -388,7 +437,7 @@ export class ExportService {
         if (item && typeof item === 'object' && !Array.isArray(item)) {
           const parentIdentifier = item.id || item.name || item.key || item._parent_id || `#${parentIdx + 1}`;
           return headers.map((h) => {
-            const v = item[h];
+            const v = this.getNestedValue(item, h);
             if (Array.isArray(v)) {
               if (v.length > 0) {
                 if (!childArrayMap.has(h)) {
@@ -451,7 +500,7 @@ export class ExportService {
     const headersSet = new Set<string>();
     items.forEach((item) => {
       if (item && typeof item === 'object' && !Array.isArray(item)) {
-        Object.keys(item).forEach((k) => headersSet.add(k));
+        this.collectFlattenedKeys(item, '', headersSet);
       }
     });
 
@@ -471,7 +520,7 @@ export class ExportService {
 
     items.forEach((item) => {
       if (item && typeof item === 'object' && !Array.isArray(item)) {
-        const row = headers.map((h) => escapeCsvField(item[h]));
+        const row = headers.map((h) => escapeCsvField(this.getNestedValue(item, h)));
         lines.push(row.join(','));
       } else {
         lines.push(escapeCsvField(item));

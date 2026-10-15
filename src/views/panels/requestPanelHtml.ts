@@ -1592,6 +1592,20 @@ export function getRequestPanelHtml(
       font-style: italic;
       font-size: 11px;
     }
+    .table-obj-btn {
+      background: rgba(156, 220, 254, 0.08);
+      border: 1px solid rgba(156, 220, 254, 0.25);
+      border-radius: 12px;
+      padding: 1px 7px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s ease;
+    }
+    .table-obj-btn:hover {
+      background: rgba(156, 220, 254, 0.2);
+      border-color: #9cdcfe;
+      transform: translateY(-1px);
+    }
     .table-cell-null {
       color: var(--muted);
       font-style: italic;
@@ -2975,6 +2989,7 @@ export function getRequestPanelHtml(
               </div>
               <div class="table-toolbar-right">
                 <input type="text" id="table-filter-input" class="table-filter-input" placeholder="Filter rows..." title="Search & filter rows in current table" />
+                <button id="btn-table-flatten" class="btn btn-secondary" style="font-size: 11px; padding: 2px 7px;" title="Toggle between Flattened (object.subobject) and Grouped ({ N fields }) mode">☷ Flatten: On</button>
                 <button id="btn-table-orientation" class="btn btn-secondary" style="font-size: 11px; padding: 2px 7px;" title="Toggle between Horizontal (rows as records) and Vertical (transposed) mode">⇄ Orientation</button>
                 <button id="btn-table-export-csv" class="btn btn-secondary" style="font-size: 11px; padding: 2px 7px;" title="Export current table view to CSV">⬇ CSV</button>
                 <button id="btn-table-export-xlsx" class="btn btn-secondary" style="font-size: 11px; padding: 2px 7px;" title="Export entire response to Excel (.xlsx) with dedicated tabs for every array">⬇ XLSX</button>
@@ -5250,9 +5265,53 @@ export function getRequestPanelHtml(
     let isFormattedView = true;
     let isTableViewActive = false;
     let tableOrientation = 'horizontal'; // Default horizontal mode
+    let tableFlattenObjects = true; // Default: flatten sub-objects as object.subobject
     let tableNavStack = []; // [{ label: string, data: any }]
     let tableFilterQuery = '';
     let lastParsedJson = null;
+
+    function isPlainObject(val) {
+      return val !== null && typeof val === 'object' && !Array.isArray(val);
+    }
+
+    function getNestedValue(obj, path) {
+      if (!obj || typeof obj !== 'object') return undefined;
+      if (Object.prototype.hasOwnProperty.call(obj, path)) return obj[path];
+      const parts = path.split('.');
+      let curr = obj;
+      for (let i = 0; i < parts.length; i++) {
+        if (curr === null || curr === undefined || typeof curr !== 'object') return undefined;
+        curr = curr[parts[i]];
+      }
+      return curr;
+    }
+
+    function collectFlattenedKeys(obj, prefix, targetSet, visited, maxDepth) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+      if (!visited) visited = new Set();
+      if (visited.has(obj) || (maxDepth !== undefined && maxDepth <= 0)) {
+        if (prefix) targetSet.add(prefix);
+        return;
+      }
+      visited.add(obj);
+
+      const keys = Object.keys(obj);
+      if (keys.length === 0 && prefix) {
+        targetSet.add(prefix);
+        return;
+      }
+
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        const fullKey = prefix ? (prefix + '.' + k) : k;
+        const val = obj[k];
+        if (val !== null && typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length > 0) {
+          collectFlattenedKeys(val, fullKey, targetSet, visited, (maxDepth !== undefined ? maxDepth : 8) - 1);
+        } else {
+          targetSet.add(fullKey);
+        }
+      }
+    }
 
     function escapeJsonHtml(str) {
       if (typeof str !== 'string') str = String(str);
@@ -5552,7 +5611,7 @@ export function getRequestPanelHtml(
       if (typeof val === 'object') {
         const keys = Object.keys(val);
         const jsonPreview = JSON.stringify(val);
-        return '<span class="table-obj-badge" title="' + escapeJsonHtml(jsonPreview) + '">{ ' + keys.length + (keys.length === 1 ? ' field' : ' fields') + ' }</span>';
+        return '<button type="button" class="table-obj-badge table-obj-btn" data-key="' + escapeJsonHtml(fieldKey) + '" data-row="' + rowIdx + '" title="Click to view object fields (JSON: ' + escapeJsonHtml(jsonPreview) + ')">{ ' + keys.length + (keys.length === 1 ? ' field' : ' fields') + ' } ↗</button>';
       }
       const s = String(val);
       return '<span class="table-cell-str" title="' + escapeJsonHtml(s) + '">' + escapeJsonHtml(s) + '</span>';
@@ -5567,6 +5626,7 @@ export function getRequestPanelHtml(
       const backBtn = document.getElementById('btn-table-back');
       const countTag = document.getElementById('table-record-count');
       const orientBtn = document.getElementById('btn-table-orientation');
+      const flattenBtn = document.getElementById('btn-table-flatten');
 
       if (!tableElem || !thead || !tbody) return;
 
@@ -5614,6 +5674,14 @@ export function getRequestPanelHtml(
           : 'Currently in Vertical mode (columns as records). Click to flip to Horizontal mode.';
       }
 
+      // Update flatten button label
+      if (flattenBtn) {
+        flattenBtn.textContent = tableFlattenObjects ? '☷ Flatten: On' : '☷ Flatten: Off';
+        flattenBtn.title = tableFlattenObjects
+          ? 'Sub-objects are flattened into object.subobject columns. Click to group into { N fields }.'
+          : 'Sub-objects are grouped into { N fields }. Click to flatten into object.subobject columns.';
+      }
+
       // Normalize current data to array of records
       let items = [];
       if (Array.isArray(currentData)) {
@@ -5637,11 +5705,15 @@ export function getRequestPanelHtml(
       tableElem.style.display = 'table';
       if (emptyDiv) emptyDiv.style.display = 'none';
 
-      // Discover all property keys across objects
+      // Discover all property keys across objects (flattened or unflattened)
       const headersSet = new Set();
       items.forEach(item => {
         if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
-          Object.keys(item).forEach(k => headersSet.add(k));
+          if (tableFlattenObjects) {
+            collectFlattenedKeys(item, '', headersSet);
+          } else {
+            Object.keys(item).forEach(k => headersSet.add(k));
+          }
         }
       });
       const headers = headersSet.size > 0 ? Array.from(headersSet) : ['Value'];
@@ -5698,7 +5770,9 @@ export function getRequestPanelHtml(
         filteredItemsWithIdx.forEach(({ item, originalIdx }) => {
           bodyHtml += '<tr><td class="col-index">' + (originalIdx + 1) + '</td>';
           headers.forEach(h => {
-            const val = (item && typeof item === 'object' && !Array.isArray(item)) ? item[h] : item;
+            const val = (item && typeof item === 'object' && !Array.isArray(item))
+              ? (tableFlattenObjects ? getNestedValue(item, h) : item[h])
+              : item;
             bodyHtml += '<td>' + renderTableCell(val, h, originalIdx) + '</td>';
           });
           bodyHtml += '</tr>';
@@ -5717,7 +5791,9 @@ export function getRequestPanelHtml(
         headers.forEach(h => {
           bodyHtml += '<tr><td style="font-weight: 600; color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe);">' + escapeJsonHtml(h) + '</td>';
           filteredItemsWithIdx.forEach(({ item, originalIdx }) => {
-            const val = (item && typeof item === 'object' && !Array.isArray(item)) ? item[h] : item;
+            const val = (item && typeof item === 'object' && !Array.isArray(item))
+              ? (tableFlattenObjects ? getNestedValue(item, h) : item[h])
+              : item;
             bodyHtml += '<td>' + renderTableCell(val, h, originalIdx) + '</td>';
           });
           bodyHtml += '</tr>';
@@ -5726,11 +5802,11 @@ export function getRequestPanelHtml(
       }
     }
 
-    // Array badge drill-down click (event delegation)
+    // Array badge & object badge drill-down click (event delegation)
     const tableScrollElem = document.getElementById('table-scroll-container');
     if (tableScrollElem) {
       tableScrollElem.addEventListener('click', (e) => {
-        const badge = e.target.closest('.table-array-badge');
+        const badge = e.target.closest('.table-array-badge, .table-obj-btn');
         if (!badge) return;
         const key = badge.getAttribute('data-key');
         const rowIdx = parseInt(badge.getAttribute('data-row'), 10);
@@ -5738,26 +5814,24 @@ export function getRequestPanelHtml(
 
         const currentNav = tableNavStack[tableNavStack.length - 1];
         const currentData = currentNav.data;
-        let childArr = null;
+        let childData = null;
 
         if (Array.isArray(currentData)) {
           const rowObj = currentData[rowIdx];
-          if (rowObj && Array.isArray(rowObj[key])) {
-            childArr = rowObj[key];
+          if (rowObj) {
+            childData = getNestedValue(rowObj, key);
           }
         } else if (currentData && typeof currentData === 'object') {
-          if (Array.isArray(currentData[key])) {
-            childArr = currentData[key];
-          }
+          childData = getNestedValue(currentData, key);
         }
 
-        if (childArr) {
+        if (childData && (Array.isArray(childData) || (typeof childData === 'object' && childData !== null))) {
           tableFilterQuery = '';
           const filterInput = document.getElementById('table-filter-input');
           if (filterInput) filterInput.value = '';
           tableNavStack.push({
             label: key + ' [' + (rowIdx + 1) + ']',
-            data: childArr
+            data: childData
           });
           renderTableView();
         }
@@ -5810,6 +5884,15 @@ export function getRequestPanelHtml(
     if (btnTableOrientation) {
       btnTableOrientation.addEventListener('click', () => {
         tableOrientation = tableOrientation === 'horizontal' ? 'vertical' : 'horizontal';
+        renderTableView();
+      });
+    }
+
+    // Toggle flatten sub-objects button
+    const btnTableFlatten = document.getElementById('btn-table-flatten');
+    if (btnTableFlatten) {
+      btnTableFlatten.addEventListener('click', () => {
+        tableFlattenObjects = !tableFlattenObjects;
         renderTableView();
       });
     }

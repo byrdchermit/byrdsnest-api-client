@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-10-14
 
 ### Added
+- **Table Mode Sub-Object Flattening (`object.subobject`)**:
+  - Automatically flattens nested plain objects into `object.subobject` columns in Table view, providing immediate visibility into nested fields without obscuring data behind `{ N fields }`.
+  - Preserves array structures as atomic drill-down badges (`📦 [N objects] ↗`), enabling one-click drill-down into child arrays within nested objects.
+  - Added toolbar toggle `☷ Flatten: On / Off` to switch between flattened columns and grouped `{ N fields }` badges on demand.
+  - Interactive drill-down on `{ N fields }` badges (`.table-obj-btn`) in grouped mode to inspect any sub-object in isolated table view.
+  - Seamlessly applied to CSV and multi-sheet Excel (XLSX) exports.
 - **Dedicated Params Tab (Query Parameters & Path Variables)**:
   - Added a first-class **Params** tab to the Request Builder to manage query parameters and path variables with two-way URL synchronization.
   - Full parameter table with enable/disable checkboxes, key, value, optional description, and row deletion.

@@ -5244,7 +5244,70 @@ console.log('✓ Request panel script integrity & syntax validation passed');
     console.log('✓ Request Panel Params Tab (Query Parameters & Path Variables) & StateManager Persistence verified');
   }
 
-  console.log('\nAll 71 verification test suites passed successfully! 🎉');
+  // Suite 72: Table Mode Sub-Object Flattening (object.subobject) & Array Preservation
+  {
+    const { ExportService } = require('../dist/services/exportService');
+    const { getRequestPanelHtml } = require(path.join(repoDist, 'views/panels/requestPanelHtml'));
+
+    const testItem = {
+      Name: 'Legion',
+      Id: 'byrdsnest-01',
+      LastUserName: 'byrd7',
+      AppName: 'ByrdsNest',
+      AppVersion: '1.0.0',
+      LastUserId: '54ac2b2667904d84807546e0b0abe1ff',
+      DateLastActivity: '2026-10-15T00:19:00.4558431Z',
+      Capabilities: {
+        PlayableMediaTypes: ['audio', 'video'],
+        SupportedCommands: [],
+        SupportsMediaControl: false,
+        SupportsPersistentIdentifier: true
+      }
+    };
+
+    // 1. Test key discovery flattens sub-objects with dot notation
+    const keys = new Set();
+    ExportService.collectFlattenedKeys(testItem, '', keys);
+    const discovered = Array.from(keys);
+
+    assert(discovered.includes('Name'), 'Top-level key Name must be present');
+    assert(discovered.includes('Capabilities.PlayableMediaTypes'), 'Sub-object array key Capabilities.PlayableMediaTypes must be present');
+    assert(discovered.includes('Capabilities.SupportedCommands'), 'Sub-object array key Capabilities.SupportedCommands must be present');
+    assert(discovered.includes('Capabilities.SupportsMediaControl'), 'Sub-object boolean key Capabilities.SupportsMediaControl must be present');
+    assert(discovered.includes('Capabilities.SupportsPersistentIdentifier'), 'Sub-object boolean key Capabilities.SupportsPersistentIdentifier must be present');
+    assert(!discovered.includes('Capabilities'), 'Parent object Capabilities should not be a leaf column when flattened');
+
+    // 2. Test getNestedValue resolves dot notation values safely
+    assert.strictEqual(ExportService.getNestedValue(testItem, 'Name'), 'Legion');
+    assert.strictEqual(ExportService.getNestedValue(testItem, 'Capabilities.SupportsMediaControl'), false);
+    assert.strictEqual(ExportService.getNestedValue(testItem, 'Capabilities.SupportsPersistentIdentifier'), true);
+    assert.deepStrictEqual(ExportService.getNestedValue(testItem, 'Capabilities.PlayableMediaTypes'), ['audio', 'video']);
+    assert.strictEqual(ExportService.getNestedValue(testItem, 'Capabilities.NonExistent'), undefined);
+
+    // 3. Test CSV export with flattened sub-objects
+    const csv = ExportService.jsonToCsv([testItem]);
+    assert(csv.includes('Capabilities.SupportsMediaControl'), 'CSV header includes Capabilities.SupportsMediaControl');
+    assert(csv.includes('Capabilities.SupportsPersistentIdentifier'), 'CSV header includes Capabilities.SupportsPersistentIdentifier');
+    assert(csv.includes('false'), 'CSV row includes boolean value false');
+    assert(csv.includes('true'), 'CSV row includes boolean value true');
+
+    // 4. Test requestPanelHtml includes btn-table-flatten and table-obj-btn
+    const html = getRequestPanelHtml({
+      requestId: 'req-tbl-test',
+      name: 'Table Test',
+      method: 'GET',
+      url: 'https://api.example.com/items',
+      headers: {}
+    }, new BlueByrdStateManager(mockContext).getState());
+
+    assert(html.includes('id="btn-table-flatten"'), 'HTML must include #btn-table-flatten toolbar button');
+    assert(html.includes('☷ Flatten: On'), 'HTML must display Flatten: On toggle button');
+    assert(html.includes('.table-obj-btn'), 'HTML must include .table-obj-btn CSS');
+
+    console.log('✓ Table Mode Sub-Object Flattening (object.subobject) & Array Preservation verified');
+  }
+
+  console.log('\nAll 72 verification test suites passed successfully! 🎉');
   process.exit(0);
 })().catch(err => {
   console.error('Async test suite failure:', err);
